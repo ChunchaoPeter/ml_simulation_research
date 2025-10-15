@@ -5,7 +5,7 @@ Sampling functions for Linear Gaussian State Space Models for testing purposes
 import tensorflow as tf
 
 
-def sample(F, H, Q, R, x0, P0, T, B=None, controls=None, seed=None):
+def sample(F, H, Q, R, x0, Sigma0, T, B=None, controls=None, seed=None):
     """
     Simulate data from a Linear Gaussian State Space Model.
 
@@ -21,7 +21,7 @@ def sample(F, H, Q, R, x0, P0, T, B=None, controls=None, seed=None):
         Observation noise covariance
     x0 : tf.Tensor, shape (state_dim, 1) or (state_dim,)
         Initial state mean (column vector or 1D vector)
-    P0 : tf.Tensor, shape (state_dim, state_dim)
+    Sigma0 : tf.Tensor, shape (state_dim, state_dim)
         Initial state covariance
     T : int
         Number of time steps
@@ -44,7 +44,7 @@ def sample(F, H, Q, R, x0, P0, T, B=None, controls=None, seed=None):
     Q = tf.convert_to_tensor(Q, dtype=tf.float32)
     R = tf.convert_to_tensor(R, dtype=tf.float32)
     x0 = tf.convert_to_tensor(x0, dtype=tf.float32)
-    P0 = tf.convert_to_tensor(P0, dtype=tf.float32)
+    Sigma0 = tf.convert_to_tensor(Sigma0, dtype=tf.float32)
     B = tf.convert_to_tensor(B, dtype=tf.float32) if B is not None else None
 
     # Ensure x0 is a column vector
@@ -57,15 +57,15 @@ def sample(F, H, Q, R, x0, P0, T, B=None, controls=None, seed=None):
     state_dim = x0.shape[0]
     obs_dim = H.shape[0]
 
-    return _sample_impl(F, H, Q, R, x0, P0, T, B, controls, state_dim, obs_dim)
+    return _sample_impl(F, H, Q, R, x0, Sigma0, T, B, controls, state_dim, obs_dim)
 
 
 @tf.function
-def _sample_impl(F, H, Q, R, x0, P0, T, B, controls, state_dim, obs_dim):
+def _sample_impl(F, H, Q, R, x0, Sigma0, T, B, controls, state_dim, obs_dim):
     """Internal implementation of sampling with tf.function."""
-    # Sample initial state: x_0 ~ N(x0, P0)
+    # Sample initial state: x_0 ~ N(x0, Sigma0)
     x = x0 + tf.matmul(
-        tf.linalg.cholesky(P0),
+        tf.linalg.cholesky(Sigma0),
         tf.random.normal([state_dim, 1], dtype=tf.float32)
     )
 
