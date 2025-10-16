@@ -5,6 +5,10 @@ Shared pytest fixtures for Kalman Filter tests.
 import pytest
 import tensorflow as tf
 
+# Enable eager execution for coverage testing
+# This disables @tf.function graph compilation, allowing coverage.py to trace execution
+tf.config.run_functions_eagerly(True)
+
 
 @pytest.fixture
 def simple_2d_system():
