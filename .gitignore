@@ -208,3 +208,6 @@ __marimo__/
 
 # Claude local configuration (ignore entire folder)
 .claude/
+
+# macOS Finder metadata
+.DS_Store
