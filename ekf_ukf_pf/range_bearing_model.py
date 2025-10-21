@@ -1,6 +1,6 @@
 """
 Range-Bearing Non-Linear State-Space Model
-Based on Extended Kalman Filter tutorial (CMU 16-385)
+Based on Extended Kalman Filter tutorial (CMU Lecture note 16-385)
 
 This is a non-linear and non-Gaussian State-Space Model implemented in TensorFlow.
 
@@ -23,15 +23,15 @@ State-Space Model:
         h(x) = [r  ] = [sqrt(x^2 + y^2)    ]
                [θ  ]   [arctan2(y, x)      ]
 
-        r: range (distance from origin)
-        θ: bearing (angle from x-axis)
+        r: range (distance from origin, r >= 0)
+        θ: bearing (angle from x-axis, θ ∈ [-π, π])
 
 This model is non-linear because:
     - Range involves square root: r = sqrt(x^2 + y^2)
     - Bearing involves arctangent: θ = arctan2(y, x)
+    - Bearing measurements are wrapped to [-π, π] after adding noise
 
-Although the process and measurement noises are Gaussian,the posterior distribution 
-becomes non-Gaussian due to the non-linear observation function.
+The non-linearity makes the exact posterior non-Gaussian, even with Gaussian noise.
 """
 
 import tensorflow as tf
@@ -78,7 +78,7 @@ class RangeBearingModel:
             [0.0,   0.0,   0.0,   q_vel]
         ], dtype=tf.float32)
 
-        # Measurement noise covariance R
+        # Measurement noise covariance R (defined for model completeness; not used in this implementation)
         self.R = tf.constant([
             [range_noise_std**2, 0.0],
             [0.0, bearing_noise_std**2]
@@ -90,27 +90,27 @@ class RangeBearingModel:
         if seed is not None:
             tf.random.set_seed(seed)
 
-    def sample_initial_state(self, num_samples=1, initial_pos_std=100.0, initial_vel_std=10.0):
+    def sample_initial_state(self, initial_pos_std=100.0, initial_vel_std=10.0):
         """
         Sample initial state x_0 ~ N(0, P_0)
 
         Args:
-            num_samples: Number of independent samples/trajectories
             initial_pos_std: Standard deviation for initial position
             initial_vel_std: Standard deviation for initial velocity
 
         Returns:
-            Initial state tensor of shape (num_samples, 4)
+            Initial state tensor of shape (4, 1) - column vector [x, x_dot, y, y_dot]^T
         """
         # Position
-        x = tf.random.normal((num_samples, 1), mean=0.0, stddev=initial_pos_std)
-        y = tf.random.normal((num_samples, 1), mean=0.0, stddev=initial_pos_std)
+        x = tf.random.normal((1,), mean=0.0, stddev=initial_pos_std)
+        y = tf.random.normal((1,), mean=0.0, stddev=initial_pos_std)
 
         # Velocity
-        x_dot = tf.random.normal((num_samples, 1), mean=0.0, stddev=initial_vel_std)
-        y_dot = tf.random.normal((num_samples, 1), mean=0.0, stddev=initial_vel_std)
+        x_dot = tf.random.normal((1,), mean=0.0, stddev=initial_vel_std)
+        y_dot = tf.random.normal((1,), mean=0.0, stddev=initial_vel_std)
 
-        return tf.concat([x, x_dot, y, y_dot], axis=1)
+        # Stack as column vector (4, 1)
+        return tf.concat([x, x_dot, y, y_dot], axis=0)[:, tf.newaxis]
 
     def state_transition(self, x_prev):
         """
@@ -119,28 +119,20 @@ class RangeBearingModel:
         This is a LINEAR motion model (constant velocity).
 
         Args:
-            x_prev: Previous state, shape (num_samples, 4)
+            x_prev: Previous state, shape (4, 1) - column vector [x, x_dot, y, y_dot]^T
 
         Returns:
-            Next state x_t, shape (num_samples, 4)
+            Next state x_t, shape (4, 1) - column vector [x, x_dot, y, y_dot]^T
         """
-        num_samples = tf.shape(x_prev)[0]
-
-        # Linear state transition
-        x_next = tf.linalg.matvec(self.A, x_prev)
+        # Linear state transition: A @ x_prev
+        x_next = tf.linalg.matmul(self.A, x_prev)
 
         # Add Gaussian process noise
-        process_noise = tf.random.normal(
-            shape=(num_samples, 4),
-            mean=0.0,
-            stddev=1.0
+        w = tf.linalg.matmul(
+            tf.linalg.cholesky(self.Q),
+            tf.random.normal([4, 1], dtype=tf.float32)
         )
-
-        # Scale noise by Q
-        Q_chol = tf.linalg.cholesky(self.Q + 1e-6 * tf.eye(4))
-        scaled_noise = tf.linalg.matvec(Q_chol, process_noise)
-
-        x_next = x_next + scaled_noise
+        x_next = x_next + w
 
         return x_next
 
@@ -152,32 +144,31 @@ class RangeBearingModel:
                [θ  ]   [arctan2(y, x)    ]
 
         Args:
-            x: Current state, shape (num_samples, 4) [x, x_dot, y, y_dot]
+            x: Current state, shape (4, 1) - column vector [x, x_dot, y, y_dot]^T
 
         Returns:
-            Observation z, shape (num_samples, 2) [range, bearing]
+            Observation z, shape (2, 1) - column vector [range, bearing]^T
+            Note: Bearing is wrapped to [-π, π] range after adding noise
         """
-        num_samples = tf.shape(x)[0]
-
         # Extract position
-        x_pos = x[:, 0]  # x position
-        y_pos = x[:, 2]  # y position
+        x_pos = x[0, 0]  # x position
+        y_pos = x[2, 0]  # y position
 
         # Compute range: r = sqrt(x^2 + y^2)
-        range_true = tf.sqrt(x_pos**2 + y_pos**2 + 1e-8)  # Add small constant for stability
+        range_true = tf.sqrt(x_pos**2 + y_pos**2)  # Add small constant for stability
 
         # Compute bearing: θ = arctan2(y, x)
         bearing_true = tf.atan2(y_pos, x_pos)
 
         # Add measurement noise
         range_noise = tf.random.normal(
-            shape=(num_samples,),
+            shape=(),
             mean=0.0,
             stddev=self.range_noise_std
         )
 
         bearing_noise = tf.random.normal(
-            shape=(num_samples,),
+            shape=(),
             mean=0.0,
             stddev=self.bearing_noise_std
         )
@@ -185,8 +176,13 @@ class RangeBearingModel:
         range_measured = range_true + range_noise
         bearing_measured = bearing_true + bearing_noise
 
-        # Stack into observation vector
-        z = tf.stack([range_measured, bearing_measured], axis=1)
+        # Wrap bearing to [-π, π] range
+        # After adding noise, bearing can go outside [-π, π]
+        # Use atan2(sin(θ), cos(θ)) to wrap angle back to [-π, π]
+        bearing_measured = tf.atan2(tf.sin(bearing_measured), tf.cos(bearing_measured))
+
+        # Stack into observation column vector (2, 1)
+        z = tf.stack([range_measured, bearing_measured])[:, tf.newaxis]
 
         return z
 
@@ -210,19 +206,17 @@ class RangeBearingModel:
             ∂θ/∂ẏ = 0
 
         Args:
-            x: State, shape (num_samples, 4)
+            x: State, shape (4, 1) - column vector [x, x_dot, y, y_dot]^T
 
         Returns:
-            Jacobian H, shape (num_samples, 2, 4)
+            Jacobian H, shape (2, 4)
         """
-        num_samples = tf.shape(x)[0]
-
         # Extract position
-        x_pos = x[:, 0]
-        y_pos = x[:, 2]
+        x_pos = x[0, 0]
+        y_pos = x[2, 0]
 
         # Compute range and bearing
-        r = tf.sqrt(x_pos**2 + y_pos**2 + 1e-8)
+        r = tf.sqrt(x_pos**2 + y_pos**2)
         theta = tf.atan2(y_pos, x_pos)
 
         cos_theta = tf.cos(theta)
@@ -233,14 +227,13 @@ class RangeBearingModel:
         #      [-sin(θ)/r,   0,  cos(θ)/r,   0]]
 
         H = tf.stack([
-            tf.stack([cos_theta, tf.zeros_like(cos_theta), sin_theta, tf.zeros_like(sin_theta)], axis=1),
-            tf.stack([-sin_theta/r, tf.zeros_like(sin_theta), cos_theta/r, tf.zeros_like(cos_theta)], axis=1)
-        ], axis=1)
+            tf.stack([cos_theta, 0.0, sin_theta, 0.0]),
+            tf.stack([-sin_theta/r, 0.0, cos_theta/r, 0.0])
+        ])
 
         return H
 
-    def simulate_trajectory(self, T, num_samples=1,
-                          initial_pos_std=100.0, initial_vel_std=10.0):
+    def simulate_trajectory(self, T, initial_pos_std=100.0, initial_vel_std=10.0):
         """
         Simulate a complete trajectory of states and observations.
 
@@ -253,23 +246,22 @@ class RangeBearingModel:
 
         Args:
             T: Number of time steps (number of observations)
-            num_samples: Number of independent trajectories
             initial_pos_std: Standard deviation for initial position
             initial_vel_std: Standard deviation for initial velocity
 
         Returns:
-            states: Tensor of shape (4, T+1, num_samples) - includes x_0, x_1, ..., x_T
-            observations: Tensor of shape (2, T, num_samples) - includes z_1, ..., z_T
+            states: Tensor of shape (state_dim, T+1) = (4, T+1) - includes x_0, x_1, ..., x_T
+            observations: Tensor of shape (obs_dim, T) = (2, T) - includes z_1, ..., z_T
         """
-        # Sample initial state x_0
-        x = self.sample_initial_state(num_samples, initial_pos_std, initial_vel_std)
+        # Sample initial state x_0 (shape: (4, 1) - column vector)
+        x = self.sample_initial_state(initial_pos_std, initial_vel_std)
 
         # TensorArrays to store results
         states_array = tf.TensorArray(dtype=tf.float32, size=T+1)
         observations_array = tf.TensorArray(dtype=tf.float32, size=T)
 
-        # Store initial state x_0
-        states_array = states_array.write(0, x)
+        # Store initial state x_0, squeeze to 1D vector (4,)
+        states_array = states_array.write(0, tf.squeeze(x, axis=1))
 
         # Generate trajectory
         for t in range(T):
@@ -279,43 +271,13 @@ class RangeBearingModel:
             # Generate observation: z_t = h(x_t) + v_t
             z = self.observation_model(x)
 
-            # Store x_t and z_t
-            states_array = states_array.write(t + 1, x)
-            observations_array = observations_array.write(t, z)
+            # Store x_t and z_t, squeeze column vectors to 1D
+            states_array = states_array.write(t + 1, tf.squeeze(x, axis=1))
+            observations_array = observations_array.write(t, tf.squeeze(z, axis=1))
 
-        # Stack results: (T+1, num_samples, 4) -> (4, T+1, num_samples)
-        states = tf.transpose(states_array.stack(), [2, 0, 1])
-        # Stack results: (T, num_samples, 2) -> (2, T, num_samples)
-        observations = tf.transpose(observations_array.stack(), [2, 0, 1])
+        # Stack results: (T+1, state_dim) -> (state_dim, T+1)
+        states = tf.transpose(states_array.stack())
+        # Stack results: (T, obs_dim) -> (obs_dim, T)
+        observations = tf.transpose(observations_array.stack())
 
         return states, observations
-
-    def cartesian_to_polar(self, x, y):
-        """
-        Convert Cartesian coordinates to polar (range-bearing).
-
-        Args:
-            x: x-coordinate
-            y: y-coordinate
-
-        Returns:
-            range, bearing
-        """
-        r = tf.sqrt(x**2 + y**2)
-        theta = tf.atan2(y, x)
-        return r, theta
-
-    def polar_to_cartesian(self, r, theta):
-        """
-        Convert polar coordinates to Cartesian.
-
-        Args:
-            r: range
-            theta: bearing (radians)
-
-        Returns:
-            x, y coordinates
-        """
-        x = r * tf.cos(theta)
-        y = r * tf.sin(theta)
-        return x, y
