@@ -46,7 +46,7 @@ class RangeBearingModel:
     """
 
     def __init__(self, dt=1.0, process_noise_std_pos=0.1, process_noise_std_vel=0.1,
-                 range_noise_std=50.0, bearing_noise_std=0.005, seed=None):
+                 range_noise_std=10.0, bearing_noise_std=0.005, seed=None):
         """
         Initialize the Range-Bearing model.
 
@@ -174,6 +174,9 @@ class RangeBearingModel:
         )
 
         range_measured = range_true + range_noise
+        # Clip range to be positive (physical constraint: distance >= 0)
+        range_measured = tf.maximum(range_measured, 0.0)
+
         bearing_measured = bearing_true + bearing_noise
 
         # Wrap bearing to [-π, π] range
