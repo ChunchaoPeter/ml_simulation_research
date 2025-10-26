@@ -14,7 +14,7 @@ In Proceedings of the IEEE 2000 Adaptive Systems for Signal Processing, Communic
 """
 
 import tensorflow as tf
-
+import warnings
 
 class UnscentedKalmanFilter:
     """
@@ -91,10 +91,88 @@ class UnscentedKalmanFilter:
 
         # Compute scaling parameters
         self.lambda_ = self.alpha**2 * (self.state_dim + self.kappa) - self.state_dim
+
+        # Check for numerical issues with lambda
+        self._check_lambda_validity()
+
         self.gamma = tf.sqrt(self.state_dim + self.lambda_)
 
         # Compute weights for mean and covariance
         self._compute_weights()
+
+    def _check_lambda_validity(self):
+        """
+        Check if lambda parameter is valid and warn about potential numerical issues.
+
+        Lambda is computed as: λ = α² * (n + κ) - n
+        where n = state_dim, α = alpha, κ = kappa
+
+        For UKF to work properly, we need: n + λ > 0
+        This ensures that sqrt(n + λ) is real and sigma points are well-defined.
+        """
+
+        n = float(self.state_dim)
+        lambda_val = float(self.lambda_)
+
+        # Critical: Check if gamma will be imaginary or zero
+        gamma_arg = n + lambda_val
+
+        if gamma_arg <= 0:
+            raise ValueError(
+                f"UKF parameter error: state_dim + lambda = {gamma_arg:.6f} <= 0.\n"
+                f"This will cause sqrt(state_dim + lambda) to fail.\n"
+                f"Current values: state_dim={n}, lambda={lambda_val:.6f}\n"
+                f"Parameters: alpha={self.alpha}, beta={self.beta}, kappa={self.kappa}\n\n"
+                f"To fix this, try:\n"
+                f"  1. Increase alpha (currently {self.alpha}, try alpha >= {((n + 1e-6) / (n + self.kappa))**0.5:.4f})\n"
+                f"  2. Increase kappa (currently {self.kappa}, try kappa >= {-n + 1e-6:.4f})\n"
+                f"  3. Use default: alpha=1.0, beta=2.0, kappa=0.0"
+            )
+
+        # Warning: Very small gamma (numerically unstable)
+        if gamma_arg < 1e-4:
+            warnings.warn(
+                f"UKF numerical warning: state_dim + lambda = {gamma_arg:.2e} is very small.\n"
+                f"This may cause numerical instability in sigma point generation.\n"
+                f"Current: state_dim={n}, lambda={lambda_val:.6f}\n"
+                f"Parameters: alpha={self.alpha}, beta={self.beta}, kappa={self.kappa}\n"
+                f"Recommendation: Increase alpha or kappa.",
+                RuntimeWarning,
+                stacklevel=3
+            )
+
+        # Warning: Lambda is very large (unusual configuration)
+        if lambda_val > n * 10:
+            warnings.warn(
+                f"UKF parameter warning: lambda = {lambda_val:.6f} is very large (> 10 * state_dim).\n"
+                f"This causes sigma points to spread very far from the mean.\n"
+                f"Current: state_dim={n}, lambda={lambda_val:.6f}\n"
+                f"Parameters: alpha={self.alpha}, beta={self.beta}, kappa={self.kappa}\n"
+                f"Large lambda may cause:\n"
+                f"  - Numerical instability\n"
+                f"  - Negative weights (especially W_0^c)\n"
+                f"  - Violation of local linearization assumptions\n"
+                f"Recommendation: Use alpha <= 1.0 and kappa <= 3.",
+                RuntimeWarning,
+                stacklevel=3
+            )
+
+        # Warning: Alpha outside typical range
+        if self.alpha < 1e-4:
+            warnings.warn(
+                f"UKF parameter warning: alpha = {self.alpha:.2e} is very small.\n"
+                f"Small alpha causes sigma points to be very close to the mean, reducing UKF effectiveness.\n",
+                RuntimeWarning,
+                stacklevel=3
+            )
+
+        if self.alpha > 1.0:
+            warnings.warn(
+                f"UKF parameter warning: alpha = {self.alpha:.4f} > 1.0.\n"
+                f"Large alpha spreads sigma points far from the mean, which may reduce accuracy.",
+                RuntimeWarning,
+                stacklevel=3
+            )
 
     def _compute_weights(self):
         """Compute weights for sigma points."""
