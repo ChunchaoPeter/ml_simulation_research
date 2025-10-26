@@ -46,8 +46,9 @@ class UnscentedKalmanFilter:
         Initial state mean (column vector)
     Sigma0 : tf.Tensor, shape (state_dim, state_dim)
         Initial state covariance
-    alpha : float, optional (default: 1e-3)
-        Spread of sigma points (typically 1e-4 to 1)
+    alpha : float, optional (default: 1.0 for our 4-dimensional example)
+        Controls the spread of the sigma points. 
+        Be careful with very small values (e.g., 1e-3), as they can cause numerical instability in this case.
     beta : float, optional (default: 2.0)
         Incorporates prior knowledge (beta=2 optimal for Gaussian)
     kappa : float, optional (default: 0.0)
@@ -55,7 +56,7 @@ class UnscentedKalmanFilter:
     """
 
     def __init__(self, state_transition_fn, observation_fn, Q, R, x0, Sigma0,
-                 alpha=1e-3, beta=2.0, kappa=0.0):
+                 alpha=1, beta=2.0, kappa=0.0):
         # Validate required functions
         if state_transition_fn is None:
             raise ValueError(
