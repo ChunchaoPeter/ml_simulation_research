@@ -245,7 +245,7 @@ class UnscentedKalmanFilter:
 
         return mean, cov
 
-    # @tf.function
+    @tf.function
     def predict(self, x, Sigma_post, u=None):
         """
         Prediction step using unscented transform.
@@ -285,7 +285,7 @@ class UnscentedKalmanFilter:
 
         return x_pred, Sigma_pred, sigma_points_pred
 
-    # @tf.function
+    @tf.function
     def update(self, z, x_pred, Sigma_pred, sigma_points_pred):
         """
         Update step using unscented transform.
@@ -341,7 +341,7 @@ class UnscentedKalmanFilter:
 
         return x, Sigma_post
 
-    # @tf.function
+    @tf.function
     def filter(self, observations, controls=None):
         """
         Run Unscented Kalman filter on observation sequence.
