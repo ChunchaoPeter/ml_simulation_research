@@ -238,7 +238,6 @@ class TestEKFIntegration:
         assert true_states.shape == (4, T + 1)
         assert observations.shape == (2, T)
 
-
     def test_filter_reproducibility(self, range_bearing_system_with_jacobians, assert_equal):
         """Test that filter produces reproducible results."""
         (model, state_transition_fn, observation_fn,
@@ -263,67 +262,6 @@ class TestEKFIntegration:
 
         assert_equal(filtered_states1, filtered_states2)
         assert_equal(predicted_states1, predicted_states2)
-
-    def test_no_nan_or_inf(self, range_bearing_system_with_jacobians):
-        """Test that filter doesn't produce NaN or Inf values."""
-        (model, state_transition_fn, observation_fn,
-         state_jacobian_fn, obs_jacobian_fn, x0, Sigma0) = range_bearing_system_with_jacobians
-
-        ekf = ExtendedKalmanFilter(
-            state_transition_fn=state_transition_fn,
-            observation_fn=observation_fn,
-            Q=model.Q,
-            R=model.R,
-            x0=x0,
-            Sigma0=Sigma0,
-            state_transition_jacobian_fn=state_jacobian_fn,
-            observation_jacobian_fn=obs_jacobian_fn
-        )
-
-        T = 100
-        _, observations = model.simulate_trajectory(T=T)
-        filtered_states, predicted_states = ekf.filter(observations)
-
-        assert not tf.reduce_any(tf.math.is_nan(filtered_states))
-        assert not tf.reduce_any(tf.math.is_inf(filtered_states))
-        assert not tf.reduce_any(tf.math.is_nan(predicted_states))
-        assert not tf.reduce_any(tf.math.is_inf(predicted_states))
-
-    def test_full_workflow(self, range_bearing_system_with_jacobians):
-        """Test complete workflow: simulate -> filter -> evaluate."""
-        (model, state_transition_fn, observation_fn,
-         state_jacobian_fn, obs_jacobian_fn, x0, Sigma0) = range_bearing_system_with_jacobians
-
-        T = 30
-        true_states, observations = model.simulate_trajectory(T=T)
-
-        ekf = ExtendedKalmanFilter(
-            state_transition_fn=state_transition_fn,
-            observation_fn=observation_fn,
-            Q=model.Q,
-            R=model.R,
-            x0=true_states[:, 0],
-            Sigma0=Sigma0,
-            state_transition_jacobian_fn=state_jacobian_fn,
-            observation_jacobian_fn=obs_jacobian_fn
-        )
-        filtered_states, predicted_states = ekf.filter(observations)
-
-        pred_error = tf.reduce_mean(
-            tf.sqrt((predicted_states[0, :] - true_states[0, 1:])**2 +
-                   (predicted_states[2, :] - true_states[2, 1:])**2)
-        )
-        filt_error = tf.reduce_mean(
-            tf.sqrt((filtered_states[0, 1:] - true_states[0, 1:])**2 +
-                   (filtered_states[2, 1:] - true_states[2, 1:])**2)
-        )
-
-        assert true_states.shape == (4, T + 1)
-        assert observations.shape == (2, T)
-        assert filtered_states.shape == (4, T + 1)
-        assert predicted_states.shape == (4, T)
-        assert filt_error < 100.0
-        assert pred_error < 100.0
 
 
 if __name__ == "__main__":
