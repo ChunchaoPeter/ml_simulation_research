@@ -7,3 +7,4 @@ tensorflow_keras==0.1
 tensorflow-probability==0.24.0
 tf_keras==2.16.0
 pytest==9.0.1
+pandas==2.3.3
