@@ -173,7 +173,6 @@ class ParticleFilter:
         """
         return 1.0 / tf.reduce_sum(weights ** 2)
 
-    @tf.function
     def force_resample(self, particles, weights):
         """
         Force resampling of all particles, ignoring the effective sample size.
