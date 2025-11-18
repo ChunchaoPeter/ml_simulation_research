@@ -79,8 +79,6 @@ class ParticleFilter:
         Number of particles N
     resample_method : str
         Resampling method: 'multinomial'
-    resample_threshold : float, optional
-        Resample when N_eff / N < threshold (default: 1.0, always resample)
     dtype : tf.DType
         Data type for computations
     """
@@ -88,7 +86,7 @@ class ParticleFilter:
     def __init__(self, state_transition_fn, observation_fn,
                  process_noise_sampler, observation_likelihood_fn, x0_sampler,
                  num_particles=100, resample_method='multinomial',
-                 resample_threshold=1.0, dtype=tf.float64):
+                 dtype=tf.float64):
         # Validate required functions
         if state_transition_fn is None:
             raise ValueError(
@@ -123,7 +121,6 @@ class ParticleFilter:
         self.sample_initial_states = x0_sampler
         self.num_particles = num_particles
         self.resample_method = resample_method
-        self.resample_threshold = resample_threshold
         self.dtype = dtype
 
 
@@ -176,6 +173,7 @@ class ParticleFilter:
         """
         return 1.0 / tf.reduce_sum(weights ** 2)
 
+    @tf.function
     def force_resample(self, particles, weights):
         """
         Force resampling of all particles, ignoring the effective sample size.
@@ -187,7 +185,6 @@ class ParticleFilter:
         Returns:
             particles: Resampled particles (state_dim, num_particles)
             weights: Uniform weights after resampling
-            resampled: Always True (resampling is forced)
             ancestry: Ancestry indices used for resampling
         """
 
@@ -200,44 +197,10 @@ class ParticleFilter:
         # Reset weights to uniform
         weights = tf.ones(self.num_particles, dtype=self.dtype) / self.num_particles
 
-        resampled = True
         ancestry = indices
 
-        return particles, weights, resampled, ancestry
+        return particles, weights, ancestry
 
-
-
-    def resample_if_needed(self, particles, weights):
-        """
-        Resample particles if effective sample size is too low or force re
-
-        Args:
-            particles: Current particles (state_dim, num_particles)
-            weights: Current weights (num_particles,)
-
-        Returns:
-            particles: Resampled particles (or original if no resampling)
-            weights: Uniform weights if resampled, original otherwise
-            resampled: Whether resampling was performed
-            ancestry: Ancestry indices (if resampled), or range(num_particles) otherwise
-        """
-
-
-        resampled = False
-        ancestry = tf.range(self.num_particles, dtype=tf.int32)
-        
-        n_eff = self.effective_sample_size(weights)
-        threshold = self.resample_threshold * self.num_particles
-        if n_eff < threshold:
-    
-            # Resample
-            indices = self.resample(weights)
-            particles = tf.gather(particles, indices, axis=1)
-            weights = tf.ones(self.num_particles, dtype=self.dtype) / self.num_particles
-            resampled = True
-            ancestry = indices
-
-        return particles, weights, resampled, ancestry
 
     @tf.function
     def predict(self, particles, u=None):
@@ -322,6 +285,7 @@ class ParticleFilter:
         )
         return x_est
 
+    @tf.function
     def filter(self, observations, controls=None, return_details=False):
         """
         Run particle filter on observation sequence (Algorithm 3 from Notes 9).
@@ -337,7 +301,6 @@ class ParticleFilter:
             particles_history: Particle history (state_dim, num_particles, T+1) [if return_details]
             weights_history: Weight history (num_particles, T+1) [if return_details]
             ess_history: Effective sample size history (T+1,) [if return_details]
-            resample_history: Resampling indicator (T+1,) [if return_details]
             ancestry_history: Ancestry indices (num_particles, T+1) [if return_details]
         """
         observations = tf.convert_to_tensor(observations, dtype=self.dtype)
@@ -358,7 +321,6 @@ class ParticleFilter:
         particles_history = []
         weights_history = []
         ess_history = []
-        resample_history = []
         ancestry_history = []
 
         # Compute and store initial state estimate (t=0)
@@ -369,7 +331,6 @@ class ParticleFilter:
             particles_history.append(particles)
             weights_history.append(weights)
             ess_history.append(self.effective_sample_size(weights))
-            resample_history.append(tf.constant(0.0, dtype=self.dtype))
             ancestry_history.append(tf.range(self.num_particles, dtype=tf.int32))
 
         # ============================================================
@@ -409,10 +370,9 @@ class ParticleFilter:
             # --------------------------------------------------------
             # STEP 4: RESAMPLING (at the end, for next iteration)
             # --------------------------------------------------------
-            particles, weights, resampled, ancestry = self.force_resample(particles, weights)
+            particles, weights, ancestry = self.force_resample(particles, weights)
 
             if return_details:
-                resample_history.append(tf.constant(1.0 if resampled else 0.0, dtype=self.dtype))
                 ancestry_history.append(ancestry)
 
         # Convert to tensors
@@ -423,10 +383,9 @@ class ParticleFilter:
             particles_history = tf.stack(particles_history, axis=2)  # (state_dim, num_particles, T+1)
             weights_history = tf.stack(weights_history, axis=1)  # (num_particles, T+1)
             ess_history = tf.stack(ess_history)  # (T+1,)
-            resample_history = tf.stack(resample_history)  # (T+1,)
             ancestry_history = tf.stack(ancestry_history, axis=1)  # (num_particles, T+1)
 
             return (filtered_states, predicted_states, particles_history, weights_history,
-                    ess_history, resample_history, ancestry_history)
+                    ess_history, ancestry_history)
         else:
             return filtered_states
