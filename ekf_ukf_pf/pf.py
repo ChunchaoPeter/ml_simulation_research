@@ -137,13 +137,22 @@ class ParticleFilter:
         Returns:
             indices: Resampled particle indices (N,)
         """
-        # Sample from categorical distribution using TensorFlow Probability
+        # Sample from categorical distribution
         # This implements: A^i ~ Cat(w^1,...,w^N)
-        categorical = tfd.Categorical(probs=weights)
-        indices = categorical.sample(self.num_particles)
+        # Use log probabilities for numerical stability
+        logits = tf.math.log(weights + 1e-10)
 
-        # Cast to int32 for consistency
-        return tf.cast(indices, tf.int32)
+        # tf.random.categorical expects shape [batch_size, num_classes]
+        # and returns [batch_size, num_samples]
+        # We want to sample num_particles times from one distribution
+        logits_2d = tf.reshape(logits, [1, -1])
+        indices = tf.random.categorical(logits_2d, self.num_particles, dtype=tf.int32)
+
+        # Reshape from [1, num_particles] to [num_particles]
+        indices = tf.reshape(indices, [-1])
+
+        # This method is much faster than using tfd.Categorical(probs=weights) 
+        return indices
 
     def resample(self, weights):
         """
@@ -302,7 +311,7 @@ class ParticleFilter:
             ess_history: Effective sample size history (T+1,) [if return_details]
             ancestry_history: Ancestry indices (num_particles, T+1) [if return_details]
         """
-        observations = tf.convert_to_tensor(observations, dtype=self.dtype)
+        observations = tf.cast(tf.convert_to_tensor(observations), dtype=self.dtype)
         T = observations.shape[1]
 
         # ============================================================
