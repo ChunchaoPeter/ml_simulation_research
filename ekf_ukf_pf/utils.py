@@ -264,6 +264,10 @@ def compute_position_error(filtered_states: tf.Tensor,
     Returns:
         Position errors, shape (T,) if exclude_first else (T+1,)
     """
+    # Cast both to float32 to avoid dtype mismatch
+    filtered_states = tf.cast(filtered_states, tf.float32)
+    true_states = tf.cast(true_states, tf.float32)
+
     if exclude_first:
         pos_error = tf.sqrt(
             (filtered_states[0, 1:] - true_states[0, 1:])**2 +
