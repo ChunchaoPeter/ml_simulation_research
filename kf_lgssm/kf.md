@@ -81,7 +81,7 @@ K_t = \Sigma_{t|t-1} H_t^\top S_t^{-1}
 ```
 
 ---
-In our implementation, we replace $F_t, H_t, Q_t, R_t, B_t$ with $F, H, Q, R, B$, assuming they are time-invariant.
+The notation ${t \mid t-1}$ means “at time $t$ given information up to time $t-1$”. Thus, $\hat{\mathbf{x}}_{t|t-1}$ is the \emph{predicted} state at time $t$ before observing $\mathbf{z}_t$,  while $\hat{\mathbf{x}}_{t|t}$ is the \emph{updated} (filtered) state after incorporating $\mathbf{z}_t$. In our implementation, we replace $F_t, H_t, Q_t, R_t, B_t$ with $F, H, Q, R, B$, assuming they are time-invariant.
 
 ## Notes
 
