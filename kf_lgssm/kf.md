@@ -74,13 +74,14 @@ K_t = \Sigma_{t|t-1} H_t^\top S_t^{-1}
 \hat{\mathbf{x}}_{t|t} = \hat{\mathbf{x}}_{t|t-1} + K_t \mathbf{r}_t
 ```
 
-**Posterior error covariance (Joseph stabilized form):**
+**Posterior error covariance:**
 
 ```math
-\Sigma_{t|t} = (I - K_t H_t)\Sigma_{t|t-1}(I - K_t H_t)^\top + K_t R_t K_t^\top
+\Sigma_{t|t}  = (I - K_t H_t)\Sigma_{t|t-1} \text{ or } \Sigma_{t|t} = (I - K_t H_t)\Sigma_{t|t-1}(I - K_t H_t)^\top + K_t R_t K_t^\top \text{(Joseph stabilized form)}
 ```
 
 ---
+In our implementation, we replace $F_t, H_t, Q_t, R_t, B_t$ with $F, H, Q, R, B$, assuming they are time-invariant.
 
 ## Notes
 
