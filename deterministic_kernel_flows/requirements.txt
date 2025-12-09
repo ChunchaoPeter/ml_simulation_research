@@ -39,3 +39,7 @@ wheel==0.45.1
 wrapt==1.17.3
 pytest==8.3.4
 pytest-cov==6.0.0
+scipy==1.16.3
+tensorflow_keras==0.1
+tensorflow-probability==0.24.0
+tf_keras==2.20.0
