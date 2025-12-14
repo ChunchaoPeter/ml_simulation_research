@@ -515,6 +515,133 @@ def observation_model(x, model_params):
     # Return as column vector (n_sensors, 1)
     return tf.reshape(z, [n_sensors, 1])
 
+
+def compute_observation_jacobian(x, model_params):
+    """
+    Compute the Jacobian matrix H = ∂h/∂x of the acoustic observation model.
+
+    MATLAB Reference:
+        Acoustic_dh_dxfunc.m
+
+    Observation model (inv_power = 1):
+        h_s(x) = Σ_{i=1}^{n_targets} Ψ / (r_{si} + d0)
+
+    where:
+        r_{si} = sqrt((x_i - s_x)^2 + (y_i - s_y)^2)
+
+    Jacobian structure:
+        State order per target:
+            [x_i, y_i, vx_i, vy_i]
+
+        Measurement does NOT depend on velocity:
+            ∂h/∂vx_i = 0
+            ∂h/∂vy_i = 0
+
+        Position derivatives:
+            ∂h_s/∂x_i = -Ψ (x_i - s_x) / [r_{si} (r_{si} + d0)^2]
+            ∂h_s/∂y_i = -Ψ (y_i - s_y) / [r_{si} (r_{si} + d0)^2]
+
+    Args:
+        x : Tensor, shape (state_dim, 1)
+            State vector:
+            [x1, y1, vx1, vy1, x2, y2, vx2, vy2, ...]^T
+
+        model_params : dict
+            {
+                'n_targets': int,
+                'state_dim': int,
+                'sensor_positions': Tensor (n_sensors, 2),
+                'n_sensors': int,
+                'amplitude': float (Ψ),
+                'inv_power': int (assumed = 1),
+                'd0': float
+            }
+
+    Returns:
+        H : Tensor, shape (n_sensors, state_dim)
+            Observation Jacobian matrix
+    """
+    # ============================================================
+    # Unpack model parameters
+    # ============================================================
+    n_targets = model_params['n_targets']
+    state_dim = model_params['state_dim']
+    sensor_positions = model_params['sensor_positions']  # (n_sensors, 2)
+    n_sensors = model_params['n_sensors']
+    amplitude = model_params['amplitude']
+    d0 = model_params['d0']
+    
+    # ============================================================
+    # Step 1: Extract target positions from state vector
+    # MATLAB:
+    #   xx = xp(1:4:nTarget*4,:);
+    #   xy = xp(2:4:nTarget*4,:);
+    # ============================================================
+    x_flat = tf.squeeze(x, axis=1)  # (state_dim,)
+
+    x_positions = tf.gather(x_flat, tf.range(0, state_dim, 4))  # (n_targets,)
+    y_positions = tf.gather(x_flat, tf.range(1, state_dim, 4))  # (n_targets,)
+
+    # Stack positions as (x_i, y_i)
+    target_positions = tf.stack([x_positions, y_positions], axis=1)  # (n_targets, 2)
+    
+        # ============================================================
+    # Step 2: Compute sensor–target relative vectors and distances
+    # MATLAB:
+    #   mv = bsxfun(@minus, x, sensorsPos)
+    #   v  = sqrt((x_i - s_x)^2 + (y_i - s_y)^2)
+    # ============================================================
+    sensors_expanded = tf.expand_dims(sensor_positions, axis=1)  # (n_sensors, 1, 2)
+    targets_expanded = tf.expand_dims(target_positions, axis=0)  # (1, n_targets, 2)
+
+    # diff[s, i, :] = [x_i - s_x, y_i - s_y]
+    diff = targets_expanded - sensors_expanded  # (n_sensors, n_targets, 2)
+
+    distances_sq = tf.reduce_sum(tf.square(diff), axis=2)  # (n_sensors, n_targets)
+    distances = tf.sqrt(distances_sq)                      # r_{si}
+
+
+    # ============================================================
+    # Step 3: Compute scalar derivative factor
+    # MATLAB:
+    #   factor = -Amp ./ (r .* (r + d0).^2)
+    # ============================================================
+    factor = -amplitude / (distances * tf.square(distances + d0))
+    factor = tf.expand_dims(factor, axis=2)  # (n_sensors, n_targets, 1)
+
+    # ============================================================
+    # Step 4: Position derivatives
+    # MATLAB:
+    #   v = (factor .* mv)'
+    # ============================================================
+    # position_derivatives[s, i, 0] = ∂h_s / ∂x_i
+    # position_derivatives[s, i, 1] = ∂h_s / ∂y_i
+    position_derivatives = factor * diff  # (n_sensors, n_targets, 2)
+
+    # ============================================================
+    # Step 5: Assemble full Jacobian matrix
+    # MATLAB:
+    #   dhdx(:,1:4:end) = ∂h/∂x
+    #   dhdx(:,2:4:end) = ∂h/∂y
+    # ============================================================
+    H_rows = []
+    for s in range(n_sensors):
+        row_elements = []
+        for i in range(n_targets):
+            row_elements.extend([
+                position_derivatives[s, i, 0],  # ∂h_s/∂x_i
+                position_derivatives[s, i, 1],  # ∂h_s/∂y_i
+                tf.constant(0.0, tf.float32),   # ∂h_s/∂vx_i
+                tf.constant(0.0, tf.float32),   # ∂h_s/∂vy_i
+            ])
+
+        H_rows.append(tf.stack(row_elements))
+
+    H = tf.stack(H_rows)  # (n_sensors, state_dim)
+
+    return H
+
+
 if __name__ == "__main__":
     """
     Example usage demonstrating the acoustic model functions.
