@@ -688,7 +688,8 @@ def simulate_trajectory(model_params, T,
     state_dim = model_params['state_dim']
     sim_area_size = model_params['sim_area_size']
     
-    for attempt in range(max_attempts):
+    out_of_bounds = True
+    while out_of_bounds:
         # ============================================================
         # Step 1: Initialize trajectory with FIXED initial state
         # MATLAB: x(:,1) = x0
@@ -754,24 +755,12 @@ def simulate_trajectory(model_params, T,
             # observations_array = observations_array.write(t, tf.squeeze(z, axis=1))
             states.append(tf.squeeze(x, axis=1))
             observations.append(tf.squeeze(z, axis=1))
-
-        # ============================================================
-        # Step 3: Accept or reject trajectory
-        # MATLAB: while outofbounds, regenerate
-        # ============================================================
-        if not out_of_bounds or not keep_in_bounds:
-            # states = tf.transpose(states_array.stack())
-            # observations = tf.transpose(observations_array.stack())
-            states = tf.stack(states, axis=1)          # (state_dim, T+1)
-            observations = tf.stack(observations, axis=1)  # (n_sensors, T)
-            return states, observations
-    
-    # ============================================================
-    # Failure case
-    # ============================================================
-    raise RuntimeError(
-        f"Failed to generate valid trajectory after {max_attempts} attempts"
-    )
+    # ------------------------------------------------------------
+    # Valid trajectory found
+    # ------------------------------------------------------------
+    states = tf.stack(states, axis=1)
+    observations = tf.stack(observations, axis=1)
+    return states, observations
 
 if __name__ == "__main__":
     """
