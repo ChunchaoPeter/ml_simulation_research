@@ -695,12 +695,16 @@ def simulate_trajectory(model_params, T,
         # ============================================================
         x = tf.identity(model_params['x0_initial_target_states'])  # shape (state_dim, 1)
         
-        # Initialize storage
-        states_array = tf.TensorArray(dtype=tf.float32, size=T+1)
-        observations_array = tf.TensorArray(dtype=tf.float32, size=T)
+        # Python lists (safe for rejection sampling)
+        states = [tf.squeeze(x, axis=1)]
+        observations = []
+
+        # # Initialize storage
+        # states_array = tf.TensorArray(dtype=tf.float32, size=T+1)
+        # observations_array = tf.TensorArray(dtype=tf.float32, size=T)
         
-        # Store x_0
-        states_array = states_array.write(0, tf.squeeze(x, axis=1))
+        # # Store x_0
+        # states_array = states_array.write(0, tf.squeeze(x, axis=1))
         
         out_of_bounds = False
 
@@ -742,21 +746,24 @@ def simulate_trajectory(model_params, T,
                     out_of_bounds = True
                     break
 
-          # ---- Generate observation ----
+           # ---- Generate observation ----
             z = observation_model(x, model_params)
             
             # ---- Store results ----
-            states_array = states_array.write(t + 1, tf.squeeze(x, axis=1))
-            observations_array = observations_array.write(t, tf.squeeze(z, axis=1))
-
+            # states_array = states_array.write(t + 1, tf.squeeze(x, axis=1))
+            # observations_array = observations_array.write(t, tf.squeeze(z, axis=1))
+            states.append(tf.squeeze(x, axis=1))
+            observations.append(tf.squeeze(z, axis=1))
 
         # ============================================================
         # Step 3: Accept or reject trajectory
         # MATLAB: while outofbounds, regenerate
         # ============================================================
         if not out_of_bounds or not keep_in_bounds:
-            states = tf.transpose(states_array.stack())
-            observations = tf.transpose(observations_array.stack())
+            # states = tf.transpose(states_array.stack())
+            # observations = tf.transpose(observations_array.stack())
+            states = tf.stack(states, axis=1)          # (state_dim, T+1)
+            observations = tf.stack(observations, axis=1)  # (n_sensors, T)
             return states, observations
     
     # ============================================================
