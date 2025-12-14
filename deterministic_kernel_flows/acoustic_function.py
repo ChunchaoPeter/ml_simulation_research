@@ -642,6 +642,130 @@ def compute_observation_jacobian(x, model_params):
     return H
 
 
+def simulate_trajectory(model_params, T,
+                       keep_in_bounds=True, 
+                       max_attempts=100):
+    """
+    Simulate a multi-target trajectory and observations.
+
+    This version STRICTLY matches the original MATLAB behavior:
+    - Initial state x0 is fixed (not sampled)
+    - Uses real process noise Q_real
+    - Rejects trajectories that leave the surveillance region
+
+    MATLAB Reference:
+        GenerateTracks.m
+        GenerateMeasurements.m
+
+    Time convention:
+        States:        x_0, x_1, ..., x_T   (T+1 states)
+        Observations:        z_1, ..., z_T   (T observations)
+
+    Args:
+        model_params : dict
+            Must include:
+                - x0 : initial state, shape (state_dim, 1)
+                - state_dim
+                - n_targets
+                - n_sensors
+                - sim_area_size
+                - Q_real (used internally by state_transition)
+
+        T : int
+            Number of time steps / observations
+
+        keep_in_bounds : bool
+            If True, regenerate trajectory if any target leaves
+            [5%, 95%] of the surveillance region
+
+        max_attempts : int
+            Maximum number of regeneration attempts
+
+    Returns:
+        states : Tensor, shape (state_dim, T+1)
+        observations : Tensor, shape (n_sensors, T)
+    """
+    state_dim = model_params['state_dim']
+    sim_area_size = model_params['sim_area_size']
+    
+    for attempt in range(max_attempts):
+        # ============================================================
+        # Step 1: Initialize trajectory with FIXED initial state
+        # MATLAB: x(:,1) = x0
+        # ============================================================
+        x = tf.identity(model_params['x0_initial_target_states'])  # shape (state_dim, 1)
+        
+        # Initialize storage
+        states_array = tf.TensorArray(dtype=tf.float32, size=T+1)
+        observations_array = tf.TensorArray(dtype=tf.float32, size=T)
+        
+        # Store x_0
+        states_array = states_array.write(0, tf.squeeze(x, axis=1))
+        
+        out_of_bounds = False
+
+        # ============================================================
+        # Step 2: Propagate dynamics and generate measurements
+        # MATLAB:
+        #   for t = 2:T
+        #       x(:,t) = AcousticPropagate(x(:,t-1), Q_real)
+        #       z(:,t) = Acoustic_hfunc(x(:,t))
+        #   end
+        # ============================================================        
+        for t in range(T):
+
+            # ---- State transition (true dynamics) ----
+            x = state_transition(x, model_params, use_real_noise=True)
+            
+            # Check if targets are within surveillance region
+            if keep_in_bounds:
+                x_flat = tf.squeeze(x, axis=1)
+                
+                # Extract positions [x1, x2, ...], [y1, y2, ...]
+                x_positions = tf.gather(x_flat, tf.range(0, state_dim, 4))
+                y_positions = tf.gather(x_flat, tf.range(1, state_dim, 4))
+                
+                lower_bound = 0.05 * sim_area_size
+                upper_bound = 0.95 * sim_area_size
+                
+                x_out = tf.logical_or(
+                    x_positions < lower_bound,
+                    x_positions > upper_bound
+                )
+                y_out = tf.logical_or(
+                    y_positions < lower_bound,
+                    y_positions > upper_bound
+                )
+                
+                # Reject entire trajectory if ANY target is out of bounds
+                if tf.reduce_any(x_out) or tf.reduce_any(y_out):
+                    out_of_bounds = True
+                    break
+
+          # ---- Generate observation ----
+            z = observation_model(x, model_params)
+            
+            # ---- Store results ----
+            states_array = states_array.write(t + 1, tf.squeeze(x, axis=1))
+            observations_array = observations_array.write(t, tf.squeeze(z, axis=1))
+
+
+        # ============================================================
+        # Step 3: Accept or reject trajectory
+        # MATLAB: while outofbounds, regenerate
+        # ============================================================
+        if not out_of_bounds or not keep_in_bounds:
+            states = tf.transpose(states_array.stack())
+            observations = tf.transpose(observations_array.stack())
+            return states, observations
+    
+    # ============================================================
+    # Failure case
+    # ============================================================
+    raise RuntimeError(
+        f"Failed to generate valid trajectory after {max_attempts} attempts"
+    )
+
 if __name__ == "__main__":
     """
     Example usage demonstrating the acoustic model functions.
