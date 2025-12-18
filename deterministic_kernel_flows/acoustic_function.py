@@ -398,7 +398,7 @@ def state_transition(x_prev, model_params, use_real_noise=False):
 
     return x_next
 
-def observation_model(x, model_params):
+def observation_model(x, model_params, no_noise=False):
     """
     NONLINEAR observation model: z_k = h(x_k) + v_k
 
@@ -509,6 +509,9 @@ def observation_model(x, model_params):
         stddev=measurement_noise_std,
         dtype=tf.float32
     )
+
+    if no_noise:
+        return tf.reshape(z_true, [n_sensors, 1])
 
     z = z_true + noise
 
