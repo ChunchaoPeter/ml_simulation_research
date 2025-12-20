@@ -341,6 +341,7 @@ def initialize_acoustic_model(
         'P0': P0                    # Default initial covariance (state_dim, state_dim)
     }
 
+@tf.function
 def state_transition(x_prev, model_params, use_real_noise=False, no_noise=False):
     """
     State transition: x_k = Φ * x_{k-1} + w_k
@@ -410,6 +411,7 @@ def state_transition(x_prev, model_params, use_real_noise=False, no_noise=False)
 
     return x_next
 
+@tf.function
 def observation_model(x, model_params, no_noise=False):
     """
     NONLINEAR observation model: z_k = h(x_k) + v_k
@@ -530,7 +532,7 @@ def observation_model(x, model_params, no_noise=False):
     # Return as column vector (n_sensors, 1)
     return tf.reshape(z, [n_sensors, 1])
 
-
+@tf.function
 def compute_observation_jacobian(x, model_params):
     """
     Compute the Jacobian matrix H = ∂h/∂x of the acoustic observation model.
