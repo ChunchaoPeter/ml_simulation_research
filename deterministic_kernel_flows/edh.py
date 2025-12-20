@@ -176,9 +176,15 @@ class EDHFilter:
         return particles, m0
 
     @tf.function
-    def _propagate_particles(self, particles: tf.Tensor, model_params: Dict) -> tf.Tensor:
+    def _propagate_particles_tf(
+        self,
+        particles: tf.Tensor,
+        Phi: tf.Tensor,
+        Q: tf.Tensor,
+        state_dim: tf.Tensor
+    ) -> tf.Tensor:
         """
-        Propagate particles through motion model.
+        Propagate particles through motion model (TF graph-compiled version).
 
         Algorithm Line 4:
             4  Propagate particles x_{k-1}^i = f_k(x_{k-1}^i) + v_k
@@ -188,14 +194,13 @@ class EDHFilter:
 
         Args:
             particles: Current particles, shape (state_dim, n_particle)
-            model_params: Dictionary with 'Phi' and 'Q'
+            Phi: State transition matrix
+            Q: Process noise covariance
+            state_dim: State dimension (as tensor)
 
         Returns:
             particles_pred: Predicted particles, shape (state_dim, n_particle)
         """
-        state_dim = model_params['state_dim']
-        Phi = model_params['Phi']
-        Q = model_params['Q']
         n_particle = tf.shape(particles)[1]
 
         # Linear propagation: x_k = Φ * x_{k-1}
@@ -203,14 +208,26 @@ class EDHFilter:
 
         # Add process noise: w_k ~ N(0, Q)
         Q_chol = tf.linalg.cholesky(Q)
-        noise = tf.matmul(Q_chol, tf.random.normal((state_dim, n_particle), dtype=tf.float32))
+        noise = tf.matmul(Q_chol, tf.random.normal([state_dim, n_particle], dtype=tf.float32))
 
         return particles_pred + noise
 
-    @tf.function
+    def _propagate_particles(self, particles: tf.Tensor, model_params: Dict) -> tf.Tensor:
+        """Wrapper that extracts parameters and calls TF-compiled version."""
+        state_dim = tf.constant(model_params['state_dim'], dtype=tf.int32)
+        return self._propagate_particles_tf(
+            particles,
+            model_params['Phi'],
+            model_params['Q'],
+            state_dim
+        )
+
     def _ekf_predict(self, x_prev: tf.Tensor, P_prev: tf.Tensor) -> Tuple[tf.Tensor, tf.Tensor]:
         """
         EKF prediction step using ExtendedKalmanFilter from ekf.py.
+
+        Note: NOT decorated with @tf.function because self.ekf.predict()
+        is already decorated in the EKF class. Double-decoration causes issues.
 
         Algorithm Line 6:
             6  Apply UKF/EKF prediction: (m_{k-1|k-1}, P_{k-1|k-1}) → (m_{k|k-1}, P_{k|k-1})
@@ -230,12 +247,11 @@ class EDHFilter:
         if len(x_prev.shape) == 1:
             x_prev = tf.expand_dims(x_prev, 1)
 
-        # Use EKF predict method
+        # Use EKF predict method (already @tf.function decorated)
         x_pred, P_pred = self.ekf.predict(x_prev, P_prev, u=None)
 
         return x_pred, P_pred
 
-    @tf.function
     def _ekf_update(
         self,
         x_pred: tf.Tensor,
@@ -244,6 +260,9 @@ class EDHFilter:
     ) -> Tuple[tf.Tensor, tf.Tensor]:
         """
         EKF update step using ExtendedKalmanFilter from ekf.py.
+
+        Note: NOT decorated with @tf.function because self.ekf.update()
+        is already decorated in the EKF class. Double-decoration causes issues.
 
         Algorithm Line 17:
             17  Apply UKF/EKF update: (m_{k|k-1}, P_{k|k-1}) → (m_{k|k}, P_{k|k})
@@ -270,21 +289,22 @@ class EDHFilter:
         if len(x_pred.shape) == 1:
             x_pred = tf.expand_dims(x_pred, 1)
 
-        # Use EKF update method
+        # Use EKF update method (already @tf.function decorated)
         x_updated, P_updated = self.ekf.update(measurement, x_pred, P_pred)
 
         return x_updated, P_updated
 
     @tf.function
-    def _estimate_covariance(self, particles: tf.Tensor) -> tf.Tensor:
+    def _estimate_covariance_tf(self, particles: tf.Tensor, state_dim: tf.Tensor) -> tf.Tensor:
         """
-        Estimate covariance from particles.
+        Estimate covariance from particles (TF graph-compiled version).
 
         Equation:
             P = (1/(N-1)) * Σ (x_i - x̄)(x_i - x̄)^T
 
         Args:
             particles: Particles, shape (state_dim, n_particle)
+            state_dim: State dimension (as tensor)
 
         Returns:
             P: Covariance matrix, shape (state_dim, state_dim)
@@ -293,22 +313,29 @@ class EDHFilter:
         centered = particles - mean
         n_particles = tf.cast(tf.shape(particles)[1], tf.float32)
         P = tf.matmul(centered, tf.transpose(centered)) / (n_particles - 1.0)
-        P = P + 1e-6 * tf.eye(tf.shape(P)[0], dtype=tf.float32)
+        P = P + 1e-6 * tf.eye(state_dim, dtype=tf.float32)
         return P
 
+    def _estimate_covariance(self, particles: tf.Tensor, model_params: Dict) -> tf.Tensor:
+        """Wrapper that extracts parameters and calls TF-compiled version."""
+        state_dim = tf.constant(model_params['state_dim'], dtype=tf.int32)
+        return self._estimate_covariance_tf(particles, state_dim)
+
     @tf.function
-    def _compute_flow_parameters(
+    def _compute_flow_parameters_tf(
         self,
         x: tf.Tensor,
         x_bar: tf.Tensor,
         P: tf.Tensor,
         measurement: tf.Tensor,
-        lam: float,
-        model_params: Dict,
-        use_local: bool = False
+        lam: tf.Tensor,
+        R: tf.Tensor,
+        H: tf.Tensor,
+        h_x_bar: tf.Tensor,
+        state_dim: tf.Tensor
     ) -> Tuple[tf.Tensor, tf.Tensor]:
         """
-        Compute flow parameters A and b.
+        Compute flow parameters A and b (TF graph-compiled version).
 
         Algorithm Line 10:
             10  Calculate A and b from (8) and (9) using P_{k|k-1}, x̄ and H_x
@@ -322,26 +349,19 @@ class EDHFilter:
             x_bar: Mean trajectory - used in b computation
             P: Covariance P_{k|k-1}
             measurement: Current measurement z
-            lam: Current lambda value
-            model_params: Dictionary with observation model
-            use_local: If True, linearize at x; if False, at x_bar
+            lam: Current lambda value (as tensor)
+            R: Measurement noise covariance
+            H: Observation Jacobian (precomputed)
+            h_x_bar: Observation at x_bar (precomputed, no noise)
+            state_dim: State dimension (as tensor)
 
         Returns:
             A: Flow matrix, shape (state_dim, state_dim)
             b: Flow vector, shape (state_dim,)
         """
-
-        state_dim = tf.shape(P)[0]
-        R = model_params['R']
-
-        # Calculate H_x by linearizing at x̄_k (or x_i for local)
-        linearization_point = x if use_local else x_bar
-        H = compute_observation_jacobian(linearization_point, model_params)
-
-        # Compute h(x̄) and linearization residual: e = h(x̄) - H*x̄
-        h_x_bar = observation_model(x_bar, model_params, no_noise=True)
-        h_x_bar = tf.squeeze(h_x_bar, axis=1)
-        e = h_x_bar - tf.linalg.matvec(H, tf.squeeze(x_bar, axis=1))
+        # Compute linearization residual: e = h(x̄) - H*x̄
+        h_x_bar_squeezed = tf.squeeze(h_x_bar, axis=1)
+        e = h_x_bar_squeezed - tf.linalg.matvec(H, tf.squeeze(x_bar, axis=1))
 
         # Compute H*P*H^T
         HPHt = tf.matmul(tf.matmul(H, P), tf.transpose(H))
@@ -380,7 +400,48 @@ class EDHFilter:
 
         return A, b
 
-    @tf.function
+    def _compute_flow_parameters(
+        self,
+        x: tf.Tensor,
+        x_bar: tf.Tensor,
+        P: tf.Tensor,
+        measurement: tf.Tensor,
+        lam: float,
+        model_params: Dict,
+        use_local: bool = False
+    ) -> Tuple[tf.Tensor, tf.Tensor]:
+        """
+        Wrapper that computes H and h, then calls TF-compiled version.
+
+        Args:
+            x: Particle position - used for linearization
+            x_bar: Mean trajectory - used in b computation
+            P: Covariance P_{k|k-1}
+            measurement: Current measurement z
+            lam: Current lambda value
+            model_params: Dictionary with observation model
+            use_local: If True, linearize at x; if False, at x_bar
+
+        Returns:
+            A: Flow matrix, shape (state_dim, state_dim)
+            b: Flow vector, shape (state_dim,)
+        """
+        # Calculate H_x by linearizing at x̄_k (or x_i for local)
+        linearization_point = x if use_local else x_bar
+        H = compute_observation_jacobian(linearization_point, model_params)
+
+        # Compute h(x̄) and linearization residual: e = h(x̄) - H*x̄
+        h_x_bar = observation_model(x_bar, model_params, no_noise=True)
+
+        # Extract parameters
+        R = model_params['R']
+        state_dim = tf.constant(model_params['state_dim'], dtype=tf.int32)
+        lam_tensor = tf.constant(lam, dtype=tf.float32)
+
+        return self._compute_flow_parameters_tf(
+            x, x_bar, P, measurement, lam_tensor, R, H, h_x_bar, state_dim
+        )
+
     def _particle_flow(
         self,
         particles: tf.Tensor,
@@ -457,7 +518,6 @@ class EDHFilter:
 
         return eta
 
-    @tf.function
     def step(
         self,
         measurement: tf.Tensor,
@@ -494,7 +554,7 @@ class EDHFilter:
         if self.use_ekf:
             x_ekf_pred, P_pred = self._ekf_predict(self.x_ekf, self.P)
         else:
-            P_pred = self._estimate_covariance(particles_pred)
+            P_pred = self._estimate_covariance(particles_pred, model_params)
 
         # Lines 7-16: Particle flow
         particles_flowed = self._particle_flow(
@@ -509,7 +569,7 @@ class EDHFilter:
             x_ekf_updated, P_updated = self._ekf_update(x_ekf_pred, P_pred, measurement)
             self.x_ekf = x_ekf_updated
         else:
-            P_updated = self._estimate_covariance(particles_flowed)
+            P_updated = self._estimate_covariance(particles_flowed, model_params)
 
         # Update internal state
         self.particles = particles_flowed
