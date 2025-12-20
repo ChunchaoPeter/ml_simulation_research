@@ -175,6 +175,7 @@ class EDHFilter:
 
         return particles, m0
 
+    @tf.function
     def _propagate_particles(self, particles: tf.Tensor, model_params: Dict) -> tf.Tensor:
         """
         Propagate particles through motion model.
@@ -206,6 +207,7 @@ class EDHFilter:
 
         return particles_pred + noise
 
+    @tf.function
     def _ekf_predict(self, x_prev: tf.Tensor, P_prev: tf.Tensor) -> Tuple[tf.Tensor, tf.Tensor]:
         """
         EKF prediction step using ExtendedKalmanFilter from ekf.py.
@@ -233,6 +235,7 @@ class EDHFilter:
 
         return x_pred, P_pred
 
+    @tf.function
     def _ekf_update(
         self,
         x_pred: tf.Tensor,
@@ -272,6 +275,7 @@ class EDHFilter:
 
         return x_updated, P_updated
 
+    @tf.function
     def _estimate_covariance(self, particles: tf.Tensor) -> tf.Tensor:
         """
         Estimate covariance from particles.
@@ -292,6 +296,7 @@ class EDHFilter:
         P = P + 1e-6 * tf.eye(tf.shape(P)[0], dtype=tf.float32)
         return P
 
+    @tf.function
     def _compute_flow_parameters(
         self,
         x: tf.Tensor,
@@ -375,6 +380,7 @@ class EDHFilter:
 
         return A, b
 
+    @tf.function
     def _particle_flow(
         self,
         particles: tf.Tensor,
@@ -421,16 +427,23 @@ class EDHFilter:
 
             if self.use_local:
                 # Local linearization at each particle
-                slopes = []
-                for i in range(n_particle):
+                # Use tf.map_fn for vectorized computation
+                def compute_local_slope(i):
                     x_i = tf.expand_dims(eta[:, i], 1)
                     A_i, b_i = self._compute_flow_parameters(
                         x_i, eta_bar, P_pred, measurement,
                         lambda_j, model_params, use_local=True
                     )
                     slope_i = tf.linalg.matvec(A_i, tf.squeeze(x_i)) + b_i
-                    slopes.append(slope_i)
-                slopes = tf.stack(slopes, axis=1)
+                    return slope_i
+
+                # Vectorize over particles
+                slopes = tf.map_fn(
+                    compute_local_slope,
+                    tf.range(n_particle),
+                    fn_output_signature=tf.TensorSpec(shape=(None,), dtype=tf.float32)
+                )
+                slopes = tf.transpose(slopes)  # (state_dim, n_particle)
             else:
                 # Global linearization at mean
                 A, b = self._compute_flow_parameters(
@@ -444,6 +457,7 @@ class EDHFilter:
 
         return eta
 
+    @tf.function
     def step(
         self,
         measurement: tf.Tensor,
