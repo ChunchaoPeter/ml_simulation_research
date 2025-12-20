@@ -332,7 +332,7 @@ def initialize_acoustic_model(
         'x0_initial_target_states': x0_initial_target_states  # Default initial state (state_dim, 1)
     }
 
-def state_transition(x_prev, model_params, use_real_noise=False):
+def state_transition(x_prev, model_params, use_real_noise=False, no_noise=False):
     """
     State transition: x_k = Φ * x_{k-1} + w_k
 
@@ -375,6 +375,9 @@ def state_transition(x_prev, model_params, use_real_noise=False):
     # ============================================================
     x_next = tf.linalg.matmul(Phi, x_prev)
 
+    if no_noise:
+        return x_next
+    
     # ============================================================
     # Step 2: Add Gaussian process noise w ~ N(0, Q)
     # To sample from N(0, Q), we use: w = chol(Q) * z, where z ~ N(0, I)
