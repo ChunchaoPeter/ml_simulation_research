@@ -137,6 +137,7 @@ def initialize_acoustic_model(
                      - Q_real: Process noise for trajectory generation (state_dim x state_dim)
                      - R: Measurement noise covariance (n_sensors x n_sensors)
                      - x0_initial_target_states: Default initial state for 4 targets
+                     - P0: Default initial variance state for 4 targets
     """
     # ============================================================
     # STEP 1: Store basic state dimensions
@@ -289,7 +290,7 @@ def initialize_acoustic_model(
     R = tf.eye(n_sensors, dtype=tf.float32) * (measurement_noise_std ** 2)
 
     # ============================================================
-    # STEP 7: Define default initial state for 4-target scenario
+    # STEP 7: Define default initial state for 4-target scenario and variance
     # MATLAB: x0 = [12 6 0.001 0.001 32 32 -0.001 -0.005 20 13 -0.1 0.01 15 35 0.002 0.002]'
     # ============================================================
     # Initial state format: [x1, y1, vx1, vy1, x2, y2, vx2, vy2, ...]
@@ -301,6 +302,13 @@ def initialize_acoustic_model(
         20.0, 13.0, -0.1, 0.01,       # Target 3: starts at (20, 13) with velocity (-0.1, 0.01)
         15.0, 35.0, 0.002, 0.002      # Target 4: starts at (15, 35) with velocity (0.002, 0.002)
     ], dtype=tf.float32), axis=1)  # Shape: (16, 1) column vector
+
+    # Initial covariance: P0 = diag(sigma0^2)
+    sigma0 = tf.tile(
+        tf.constant([10.0, 10.0, 1.0, 1.0], tf.float32),
+        [n_targets],
+    )
+    P0 = tf.linalg.diag(sigma0 ** 2)
 
     # ============================================================
     # Return all parameters as dictionary
@@ -329,7 +337,8 @@ def initialize_acoustic_model(
         'measurement_noise_std': measurement_noise_std,  # σ_w: measurement noise std
 
         # Initial state
-        'x0_initial_target_states': x0_initial_target_states  # Default initial state (state_dim, 1)
+        'x0_initial_target_states': x0_initial_target_states,  # Default initial state (state_dim, 1)
+        'P0': P0                    # Default initial covariance (state_dim, state_dim)
     }
 
 def state_transition(x_prev, model_params, use_real_noise=False, no_noise=False):
