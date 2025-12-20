@@ -304,11 +304,24 @@ def initialize_acoustic_model(
     ], dtype=tf.float32), axis=1)  # Shape: (16, 1) column vector
 
     # Initial covariance: P0 = diag(sigma0^2)
-    sigma0 = tf.tile(
-        tf.constant([10.0, 10.0, 1.0, 1.0], tf.float32),
-        [n_targets],
+    # sigma0 = tf.tile(
+    #     tf.constant([10.0, 10.0, 1.0, 1.0], tf.float32),
+    #     [n_targets],
+    # )
+
+    # sigma0 = tf.tile(
+    #     tf.constant([10.0, 10.0, 1.0, 1.0], tf.float32),
+    #     [n_targets],
+    # )
+    # P0 = tf.linalg.diag(sigma0 ** 2)
+
+    # Initial covariance: P0: by following this paper: IMPLEMENTATION OF THE DAUM-HUANG EXACT-FLOW PARTICLE FILTER
+    var0_single = tf.constant(
+        [0.1, 0.1, 0.0005, 0.0005],
+        dtype=tf.float32
     )
-    P0 = tf.linalg.diag(sigma0 ** 2)
+    var0 = tf.tile(var0_single, [n_targets])
+    P0 = tf.linalg.diag(var0)
 
     # ============================================================
     # Return all parameters as dictionary
