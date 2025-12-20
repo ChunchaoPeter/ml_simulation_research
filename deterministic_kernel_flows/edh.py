@@ -27,6 +27,8 @@ class EDHFilter:
         n_lambda (int): Number of lambda steps for particle flow
         lambda_ratio (float): Ratio for exponential lambda spacing
         use_local (bool): If True, use local linearization (Algorithm 2)
+        use_ekf (bool): If True, use EKF for covariance tracking
+        ekf_filter (ExtendedKalmanFilter): pre-configured EKF instance
         verbose (bool): If True, print progress information
     """
 
@@ -37,6 +39,7 @@ class EDHFilter:
         lambda_ratio: float = 1.2,
         use_local: bool = False,
         use_ekf: bool = False,
+        ekf_filter: Optional['ExtendedKalmanFilter'] = None,
         verbose: bool = True
     ):
         """
@@ -48,7 +51,12 @@ class EDHFilter:
             lambda_ratio: Exponential spacing ratio (default: 1.2)
             use_local: Use local linearization (default: False)
             use_ekf: Use EKF for covariance tracking (default: False)
+            ekf_filter: Pre-configured EKF filter instance
+                       Required if use_ekf=True
             verbose: Print progress information (default: True)
+
+        Raises:
+            ValueError: If use_ekf=True but ekf_filter is None
         """
         self.n_particle = n_particle
         self.n_lambda = n_lambda
@@ -57,6 +65,15 @@ class EDHFilter:
         self.use_ekf = use_ekf
         self.verbose = verbose
 
+        # Validate EKF configuration
+        if use_ekf and ekf_filter is None:
+            raise ValueError(
+                "ekf_filter must be provided when use_ekf=True. "
+                "Use create_ekf_for_acoustic_model() to create an EKF filter."
+            )
+
+        self.ekf_filter = ekf_filter  # Store user-provided filter
+
         # Pre-compute lambda steps
         self.lambda_steps, self.lambda_values = self._compute_lambda_steps()
 
@@ -64,6 +81,8 @@ class EDHFilter:
         self.particles = None
         self.P = None  # Covariance matrix
         self.m0 = None  # Initial random mean
+        self.ekf = None  # EKF instance (initialized when use_ekf=True)
+        self.x_ekf = None  # EKF state estimate (used only when use_ekf=True)
 
     def _compute_lambda_steps(self) -> Tuple[tf.Tensor, tf.Tensor]:
         """
@@ -114,25 +133,18 @@ class EDHFilter:
         Returns:
             particles: Initial particles, shape (state_dim, n_particle)
             m0: Random initial mean, shape (state_dim, 1)
-            P0: Initial covariance, shape (state_dim, state_dim)
         """
         state_dim = model_params['state_dim']
         x0 = model_params['x0_initial_target_states']
-        n_targets = model_params['n_targets']
+        P0 = model_params['P0']
+        L = tf.linalg.cholesky(P0)
         sim_area_size = model_params['sim_area_size']
-
-        # Initial uncertainty: sigma0 = repmat(10*[1;1;0.1;0.1], nTarget, 1)
-        sigma0_single = tf.constant([10.0, 10.0, 1.0, 1.0], dtype=tf.float32)
-        sigma0 = tf.tile(sigma0_single, [n_targets])
-
-        # P_0 = diag(σ_0^2)
-        P0 = tf.linalg.diag(tf.square(sigma0))
 
         # Sample random mean m0 within bounds
         out_of_bound = True
         while out_of_bound:
             noise = tf.random.normal((state_dim, 1), dtype=tf.float32)
-            m0 = x0 + tf.expand_dims(sigma0, 1) * noise
+            m0 = x0 + tf.matmul(L, noise)
 
             # Extract x and y positions for all targets
             x_positions = m0[0::4, 0]
@@ -147,14 +159,21 @@ class EDHFilter:
 
         # Sample particles around m0
         noise = tf.random.normal((state_dim, self.n_particle), dtype=tf.float32)
-        particles = m0 + tf.expand_dims(sigma0, 1) * noise
+        particles = m0 + tf.matmul(L, noise)
 
         # Store initial state
         self.particles = particles
         self.P = P0
         self.m0 = m0
 
-        return particles, m0, P0
+        # Initialize EKF if needed
+        if self.use_ekf:
+            self.ekf = self.ekf_filter
+            self.x_ekf = m0
+            if self.verbose:
+                print("  Using provided EKF filter for covariance tracking")
+
+        return particles, m0
 
     def _propagate_particles(self, particles: tf.Tensor, model_params: Dict) -> tf.Tensor:
         """
@@ -187,11 +206,9 @@ class EDHFilter:
 
         return particles_pred + noise
 
-    def _ekf_predict(self, P_prev: tf.Tensor, model_params: Dict) -> tf.Tensor:
+    def _ekf_predict(self, x_prev: tf.Tensor, P_prev: tf.Tensor) -> Tuple[tf.Tensor, tf.Tensor]:
         """
-        TODO: add this ine
-
-        EKF prediction step for covariance.
+        EKF prediction step using ExtendedKalmanFilter from ekf.py.
 
         Algorithm Line 6:
             6  Apply UKF/EKF prediction: (m_{k-1|k-1}, P_{k-1|k-1}) → (m_{k|k-1}, P_{k|k-1})
@@ -200,30 +217,30 @@ class EDHFilter:
             P_{k|k-1} = Φ * P_{k-1|k-1} * Φ^T + Q
 
         Args:
+            x_prev: Previous state estimate, shape (state_dim,) or (state_dim, 1)
             P_prev: Previous posterior covariance P_{k-1|k-1}
-            model_params: Dictionary with 'Phi' and 'Q'
 
         Returns:
+            x_pred: Predicted state x_{k|k-1}
             P_pred: Predicted covariance P_{k|k-1}
         """
-        Phi = model_params['Phi']
-        Q = model_params['Q']
+        # Ensure x_prev is (state_dim, 1)
+        if len(x_prev.shape) == 1:
+            x_prev = tf.expand_dims(x_prev, 1)
 
-        P_pred = tf.matmul(tf.matmul(Phi, P_prev), tf.transpose(Phi)) + Q
-        P_pred = P_pred + 1e-8 * tf.eye(tf.shape(P_pred)[0], dtype=tf.float32)
+        # Use EKF predict method
+        x_pred, P_pred = self.ekf.predict(x_prev, P_prev, u=None)
 
-        return P_pred
+        return x_pred, P_pred
 
     def _ekf_update(
         self,
+        x_pred: tf.Tensor,
         P_pred: tf.Tensor,
-        x_mean: tf.Tensor,
-        measurement: tf.Tensor,
-        model_params: Dict
-    ) -> tf.Tensor:
+        measurement: tf.Tensor
+    ) -> Tuple[tf.Tensor, tf.Tensor]:
         """
-        TODO: add this ine
-        EKF update step for covariance.
+        EKF update step using ExtendedKalmanFilter from ekf.py.
 
         Algorithm Line 17:
             17  Apply UKF/EKF update: (m_{k|k-1}, P_{k|k-1}) → (m_{k|k}, P_{k|k})
@@ -234,37 +251,26 @@ class EDHFilter:
             P_{k|k} = (I - K*H) * P_{k|k-1}
 
         Args:
+            x_pred: Predicted state x_{k|k-1}
             P_pred: Predicted covariance P_{k|k-1}
-            x_mean: Mean state estimate
             measurement: Current measurement
-            model_params: Dictionary with observation model
 
         Returns:
+            x_updated: Updated state x_{k|k}
             P_updated: Updated covariance P_{k|k}
         """
+        # Ensure measurement is (n_sensor, 1)
+        if len(measurement.shape) == 1:
+            measurement = tf.expand_dims(measurement, 1)
 
-        R = model_params['R']
-        state_dim = tf.shape(P_pred)[0]
+        # Ensure x_pred is (state_dim, 1)
+        if len(x_pred.shape) == 1:
+            x_pred = tf.expand_dims(x_pred, 1)
 
-        # Ensure x_mean is (state_dim, 1)
-        if len(x_mean.shape) == 1:
-            x_mean = tf.expand_dims(x_mean, 1)
+        # Use EKF update method
+        x_updated, P_updated = self.ekf.update(measurement, x_pred, P_pred)
 
-        # Compute observation Jacobian H at mean
-        H = compute_observation_jacobian(x_mean, model_params)
-
-        # Innovation covariance: S = H * P_{k|k-1} * H^T + R
-        S = tf.matmul(tf.matmul(H, P_pred), tf.transpose(H)) + R
-
-        # Kalman gain: K = P_{k|k-1} * H^T * S^{-1}
-        K = tf.matmul(tf.matmul(P_pred, tf.transpose(H)), tf.linalg.inv(S))
-
-        # Covariance update: P_{k|k} = (I - K*H) * P_{k|k-1}
-        I = tf.eye(state_dim, dtype=tf.float32)
-        P_updated = tf.matmul(I - tf.matmul(K, H), P_pred)
-        P_updated = P_updated + 1e-8 * tf.eye(state_dim, dtype=tf.float32)
-
-        return P_updated
+        return x_updated, P_updated
 
     def _estimate_covariance(self, particles: tf.Tensor) -> tf.Tensor:
         """
@@ -472,7 +478,7 @@ class EDHFilter:
 
         # Line 6: Covariance prediction
         if self.use_ekf:
-            P_pred = self._ekf_predict(self.P, model_params)
+            x_ekf_pred, P_pred = self._ekf_predict(self.x_ekf, self.P)
         else:
             P_pred = self._estimate_covariance(particles_pred)
 
@@ -481,12 +487,13 @@ class EDHFilter:
             particles_pred, measurement, P_pred, model_params
         )
 
-        # Line 18: Estimate state
+        # Line 18: Estimate state (from particles)
         mean_estimate = tf.reduce_mean(particles_flowed, axis=1)
 
         # Line 17: Covariance update
         if self.use_ekf:
-            P_updated = self._ekf_update(P_pred, mean_estimate, measurement, model_params)
+            x_ekf_updated, P_updated = self._ekf_update(x_ekf_pred, P_pred, measurement)
+            self.x_ekf = x_ekf_updated
         else:
             P_updated = self._estimate_covariance(particles_flowed)
 
