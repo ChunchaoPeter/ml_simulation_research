@@ -373,8 +373,15 @@ class EDHFilter:
         # Innovation covariance: S = λ*H*P*H^T + R
         # Add regularization for numerical stability
         n_sensor = tf.shape(R)[0]
-        regularization = 1e-6 * tf.eye(n_sensor, dtype=tf.float32)
-        S = lam * HPHt + R + regularization
+
+        # regularization = 1e-6 * tf.eye(n_sensor, dtype=tf.float32)
+        # S = lam * HPHt + R + regularization
+
+        S = lam * HPHt + R
+        S = 0.5 * (S + tf.transpose(S))  # enforce symmetry
+        avg_diag = tf.reduce_mean(tf.linalg.diag_part(S))
+        jitter = tf.maximum(1e-9, 1e-6 * avg_diag)
+        S = S + jitter * tf.eye(n_sensor, dtype=S.dtype)
 
         # Use Cholesky decomposition instead of direct inversion (more stable)
         S_chol = tf.linalg.cholesky(S)
@@ -391,7 +398,12 @@ class EDHFilter:
         innovation = tf.squeeze(measurement, axis=1) - e
 
         # Compute R^{-1}*(z - e) using Cholesky decomposition
-        R_regularized = R + regularization
+        # R_regularized = R + regularization
+        R_sym = 0.5 * (R + tf.transpose(R))
+        avg_diag_R = tf.reduce_mean(tf.linalg.diag_part(R_sym))
+        jitter_R = tf.maximum(1e-9, 1e-6 * avg_diag_R)
+        R_regularized = R_sym + jitter_R * tf.eye(n_sensor, dtype=R.dtype)
+
         R_chol = tf.linalg.cholesky(R_regularized)
         R_inv_innov = tf.linalg.cholesky_solve(R_chol, tf.expand_dims(innovation, 1))
         R_inv_innov = tf.squeeze(R_inv_innov, axis=1)
@@ -447,12 +459,13 @@ class EDHFilter:
         # Extract parameters
         R = model_params['R']
         state_dim = tf.constant(model_params['state_dim'], dtype=tf.int32)
-        lam_tensor = tf.constant(lam, dtype=tf.float32)
+        lam_tensor = tf.cast(lam, tf.float32)
 
         return self._compute_flow_parameters_tf(
             linearization_point, eta_bar_mu_0, P, measurement, lam_tensor, R, H, h_x_bar, state_dim
         )
-
+    
+    @tf.function
     def _particle_flow(
         self,
         particles: tf.Tensor,
@@ -518,8 +531,9 @@ class EDHFilter:
                 slopes = tf.map_fn(
                     compute_local_slope,
                     tf.range(n_particle),
-                    fn_output_signature=tf.TensorSpec(shape=(None,), dtype=tf.float32)
-                )
+                    fn_output_signature=tf.TensorSpec(shape=(None,), dtype=tf.float32),
+                    parallel_iterations=16
+                    )
                 slopes = tf.transpose(slopes)  # (state_dim, n_particle)
             else:
                 # Global linearization at mean
