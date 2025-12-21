@@ -371,21 +371,30 @@ class EDHFilter:
         HPHt = tf.matmul(tf.matmul(H, P), tf.transpose(H))
 
         # Innovation covariance: S = λ*H*P*H^T + R
-        S = lam * HPHt + R
-        S_inv = tf.linalg.inv(S)
+        # Add regularization for numerical stability
+        n_sensor = tf.shape(R)[0]
+        regularization = 1e-6 * tf.eye(n_sensor, dtype=tf.float32)
+        S = lam * HPHt + R + regularization
+
+        # Use Cholesky decomposition instead of direct inversion (more stable)
+        S_chol = tf.linalg.cholesky(S)
 
         # Compute P*H^T
         PHt = tf.matmul(P, tf.transpose(H))
 
         # Flow matrix A = -0.5 * P*H^T * S^{-1} * H
-        A = -0.5 * tf.matmul(tf.matmul(PHt, S_inv), H)
+        # Using Cholesky solve: S^{-1} * H = solve(S, H)
+        S_inv_H = tf.linalg.cholesky_solve(S_chol, H)
+        A = -0.5 * tf.matmul(PHt, S_inv_H)
 
         # Innovation: z - e
         innovation = tf.squeeze(measurement, axis=1) - e
 
-        # Compute R^{-1}*(z - e)
-        R_inv = tf.linalg.inv(R)
-        R_inv_innov = tf.linalg.matvec(R_inv, innovation)
+        # Compute R^{-1}*(z - e) using Cholesky decomposition
+        R_regularized = R + regularization
+        R_chol = tf.linalg.cholesky(R_regularized)
+        R_inv_innov = tf.linalg.cholesky_solve(R_chol, tf.expand_dims(innovation, 1))
+        R_inv_innov = tf.squeeze(R_inv_innov, axis=1)
 
         # Identity matrix
         I = tf.eye(state_dim, dtype=tf.float32)
