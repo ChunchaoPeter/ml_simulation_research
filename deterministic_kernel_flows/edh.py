@@ -485,14 +485,19 @@ class EDHFilter:
             eta_bar = tf.reduce_mean(eta, axis=1, keepdims=True)
 
             if self.use_local:
-                # Local linearization at each particle
+                # Modified Algorithm 2: Local linearization at each particle
+                # Algorithm Line 11: for i = 1, ..., N do
                 # Use tf.map_fn for vectorized computation
                 def compute_local_slope(i):
-                    x_i = tf.expand_dims(eta[:, i], 1)
+                    x_i = tf.expand_dims(eta[:, i], 1)  # (state_dim, 1)
+
+                    # Lines 9-10: Compute A_i, b_i for THIS particle
                     A_i, b_i = self._compute_flow_parameters(
                         x_i, eta_bar_mu_0, P_pred, measurement,
                         lambda_j, model_params
                     )
+
+                    # Line 12: Evaluate dx^i/dλ = A_i * x^i + b_i
                     slope_i = tf.linalg.matvec(A_i, tf.squeeze(x_i)) + b_i
                     return slope_i
 
