@@ -9,9 +9,7 @@ particle filter," in Proc. IEEE Statistical Signal Processing Workshop
 """
 
 import tensorflow as tf
-from typing import Tuple, Dict, Optional
-from acoustic_function import compute_observation_jacobian, observation_model
-
+from typing import Tuple, Dict, Callable, Optional
 
 class EDHFilter:
     """
@@ -34,6 +32,8 @@ class EDHFilter:
 
     def __init__(
         self,
+        observation_jacobian: Callable,
+        observation_model: Callable,
         n_particle: int = 100,
         n_lambda: int = 20,
         lambda_ratio: float = 1.2,
@@ -46,6 +46,8 @@ class EDHFilter:
         Initialize EDH filter.
 
         Args:
+            observation_jacobian: Callable that computes the observation Jacobian
+            observation_model: Callable that maps state → observation
             n_particle: Number of particles (default: 100)
             n_lambda: Number of lambda steps (default: 20)
             lambda_ratio: Exponential spacing ratio (default: 1.2)
@@ -58,6 +60,8 @@ class EDHFilter:
         Raises:
             ValueError: If use_ekf=True but ekf_filter is None
         """
+        self.compute_observation_jacobian = observation_jacobian
+        self.observation_model = observation_model
         self.n_particle = n_particle
         self.n_lambda = n_lambda
         self.lambda_ratio = lambda_ratio
@@ -426,10 +430,10 @@ class EDHFilter:
             b: Flow vector, shape (state_dim,)
         """
         # Calculate H_x by linearizing at x̄_k (or x_i for local)
-        H = compute_observation_jacobian(linearization_point, model_params)
+        H = self.compute_observation_jacobian(linearization_point, model_params)
 
         # Compute h(x̄) and linearization residual: e = h(x̄) - H*x̄
-        h_x_bar = observation_model(linearization_point, model_params, no_noise=True)
+        h_x_bar = self.observation_model(linearization_point, model_params, no_noise=True)
 
         # Extract parameters
         R = model_params['R']
