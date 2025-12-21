@@ -324,8 +324,8 @@ class EDHFilter:
     @tf.function
     def _compute_flow_parameters_tf(
         self,
-        x: tf.Tensor,
-        x_bar: tf.Tensor,
+        linearization_point: tf.Tensor,
+        x_bar_mu_0: tf.Tensor,
         P: tf.Tensor,
         measurement: tf.Tensor,
         lam: tf.Tensor,
@@ -345,8 +345,8 @@ class EDHFilter:
             b(λ) = (I + 2λA) * [(I + λA) * P*H^T*R^{-1}*(z-e) + A*x̄]
 
         Args:
-            x: Particle position - used for linearization
-            x_bar: Mean trajectory - used in b computation
+            linearization_point: Particle position - used for linearization
+            x_bar_mu_0: Mean trajectory - used in b computation
             P: Covariance P_{k|k-1}
             measurement: Current measurement z
             lam: Current lambda value (as tensor)
@@ -361,7 +361,7 @@ class EDHFilter:
         """
         # Compute linearization residual: e = h(x̄) - H*x̄
         h_x_bar_squeezed = tf.squeeze(h_x_bar, axis=1)
-        e = h_x_bar_squeezed - tf.linalg.matvec(H, tf.squeeze(x_bar, axis=1))
+        e = h_x_bar_squeezed - tf.linalg.matvec(H, tf.squeeze(linearization_point, axis=1))
 
         # Compute H*P*H^T
         HPHt = tf.matmul(tf.matmul(H, P), tf.transpose(H))
@@ -394,7 +394,7 @@ class EDHFilter:
         # First term: (I + λA) * P*H^T * R^{-1}*(z - e)
         term1 = tf.linalg.matvec(tf.matmul(I_plus_lam_A, PHt), R_inv_innov)
         # Second term: A * x̄
-        term2 = tf.linalg.matvec(A, tf.squeeze(x_bar, axis=1))
+        term2 = tf.linalg.matvec(A, tf.squeeze(x_bar_mu_0, axis=1))
         # Combined: b = (I + 2λA) * [term1 + term2]
         b = tf.linalg.matvec(I_plus_2lam_A, term1 + term2)
 
@@ -402,20 +402,19 @@ class EDHFilter:
 
     def _compute_flow_parameters(
         self,
-        x: tf.Tensor,
-        x_bar: tf.Tensor,
+        linearization_point: tf.Tensor,
+        eta_bar_mu_0: tf.Tensor,
         P: tf.Tensor,
         measurement: tf.Tensor,
         lam: float,
-        model_params: Dict,
-        use_local: bool = False
+        model_params: Dict
     ) -> Tuple[tf.Tensor, tf.Tensor]:
         """
         Wrapper that computes H and h, then calls TF-compiled version.
 
         Args:
-            x: Particle position - used for linearization
-            x_bar: Mean trajectory - used in b computation
+            linearization_point: Particle position - used for linearization
+            eta_bar_mu_0: Mean trajectory - used in b computation
             P: Covariance P_{k|k-1}
             measurement: Current measurement z
             lam: Current lambda value
@@ -427,11 +426,10 @@ class EDHFilter:
             b: Flow vector, shape (state_dim,)
         """
         # Calculate H_x by linearizing at x̄_k (or x_i for local)
-        linearization_point = x if use_local else x_bar
         H = compute_observation_jacobian(linearization_point, model_params)
 
         # Compute h(x̄) and linearization residual: e = h(x̄) - H*x̄
-        h_x_bar = observation_model(x_bar, model_params, no_noise=True)
+        h_x_bar = observation_model(linearization_point, model_params, no_noise=True)
 
         # Extract parameters
         R = model_params['R']
@@ -439,7 +437,7 @@ class EDHFilter:
         lam_tensor = tf.constant(lam, dtype=tf.float32)
 
         return self._compute_flow_parameters_tf(
-            x, x_bar, P, measurement, lam_tensor, R, H, h_x_bar, state_dim
+            linearization_point, eta_bar_mu_0, P, measurement, lam_tensor, R, H, h_x_bar, state_dim
         )
 
     def _particle_flow(
@@ -478,7 +476,7 @@ class EDHFilter:
         """
         eta = tf.identity(particles)
         n_particle = tf.shape(particles)[1]
-
+        eta_bar_mu_0 = tf.reduce_mean(eta, axis=1, keepdims=True)
         for j in range(self.n_lambda):
             epsilon_j = self.lambda_steps[j]
             lambda_j = self.lambda_values[j]
@@ -492,8 +490,8 @@ class EDHFilter:
                 def compute_local_slope(i):
                     x_i = tf.expand_dims(eta[:, i], 1)
                     A_i, b_i = self._compute_flow_parameters(
-                        x_i, eta_bar, P_pred, measurement,
-                        lambda_j, model_params, use_local=True
+                        x_i, eta_bar_mu_0, P_pred, measurement,
+                        lambda_j, model_params
                     )
                     slope_i = tf.linalg.matvec(A_i, tf.squeeze(x_i)) + b_i
                     return slope_i
@@ -508,8 +506,8 @@ class EDHFilter:
             else:
                 # Global linearization at mean
                 A, b = self._compute_flow_parameters(
-                    eta_bar, eta_bar, P_pred, measurement,
-                    lambda_j, model_params, use_local=False
+                    eta_bar, eta_bar_mu_0, P_pred, measurement,
+                    lambda_j, model_params
                 )
                 slopes = tf.matmul(A, eta) + tf.expand_dims(b, 1)
 
