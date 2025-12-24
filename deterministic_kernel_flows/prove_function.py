@@ -1,5 +1,6 @@
 import tensorflow as tf
 import tensorflow_probability as tfp
+import matplotlib.pyplot as plt
 tfd = tfp.distributions
 
 from acoustic_function import (
@@ -619,3 +620,104 @@ def correctoinAndCalculateWeights(particles_flowed,
     partilcles_mean, weights = particle_estimate(log_weights, particles_flowed)
 
     return weights, partilcles_mean
+
+
+
+def plot_true_vs_estimated_trajectories(
+    model_params,
+    ground_truth,
+    estimates,
+    title="EDH Filter: True vs Estimated Trajectories",
+    estimate_label="EDH",
+    figsize=(12, 10),
+    colors=None
+):
+    """
+    Plot ground-truth and estimated target trajectories along with sensor positions.
+
+    Args:
+        model_params (dict):
+            Must contain:
+                - 'sensor_positions': Tensor or ndarray, shape (n_sensors, 2)
+                - 'n_targets': int
+                - 'sim_area_size': float
+        ground_truth (Tensor or ndarray):
+            Shape (state_dim, T)
+        estimates (Tensor or ndarray):
+            Shape (state_dim, T)
+        title (str):
+            Plot title
+        estimate_label (str):
+            Label for estimated trajectories (e.g., 'EDH', 'PFPF')
+        figsize (tuple):
+            Figure size
+        colors (list or None):
+            List of colors for each target
+    """
+
+    # Convert to NumPy if needed
+    sensors = model_params['sensor_positions']
+    if hasattr(sensors, "numpy"):
+        sensors = sensors.numpy()
+
+    gt = ground_truth.numpy() if hasattr(ground_truth, "numpy") else ground_truth
+    est = estimates.numpy() if hasattr(estimates, "numpy") else estimates
+
+    n_targets = model_params['n_targets']
+    sim_area_size = model_params['sim_area_size']
+
+    if colors is None:
+        colors = ['red', 'green', 'purple', 'orange', 'brown', 'cyan']
+
+    fig, ax = plt.subplots(figsize=figsize)
+
+    # Plot sensors
+    ax.scatter(
+        sensors[:, 0], sensors[:, 1],
+        c='blue', marker='o', s=100,
+        label='Sensors', alpha=0.6, zorder=5
+    )
+
+    for i in range(n_targets):
+        x_idx = i * 4
+        y_idx = i * 4 + 1
+        color = colors[i % len(colors)]
+
+        # Ground truth
+        x_true = gt[x_idx, :]
+        y_true = gt[y_idx, :]
+        ax.plot(
+            x_true, y_true,
+            '-', color=color, linewidth=2.5,
+            label=f'Target {i+1} (True)', alpha=0.7
+        )
+
+        # Estimates
+        x_est = est[x_idx, :]
+        y_est = est[y_idx, :]
+        ax.plot(
+            x_est, y_est,
+            '--', color=color, linewidth=2.5,
+            label=f'Target {i+1} ({estimate_label})',
+            alpha=0.9
+        )
+
+        # Mark start position
+        ax.plot(
+            x_true[0], y_true[0],
+            'o', color=color, markersize=12,
+            markeredgecolor='black', markeredgewidth=2
+        )
+
+    ax.set_xlabel('X (m)', fontsize=14)
+    ax.set_ylabel('Y (m)', fontsize=14)
+    ax.set_title(title, fontsize=16, fontweight='bold')
+    ax.legend(fontsize=10, loc='upper right', ncol=2)
+    ax.grid(True, alpha=0.3)
+
+    ax.set_xlim([0, sim_area_size])
+    ax.set_ylim([0, sim_area_size])
+    ax.set_aspect('equal')
+
+    plt.tight_layout()
+    plt.show()
