@@ -380,9 +380,6 @@ def particle_flow_edh(vg, model_params, measurement, lambda_steps, lambda_values
         A, b = compute_flow_parameters(eta_bar, eta_bar_mu_0, Pvariance_pred, measurement,
                                         lambda_j, model_params)
         
-        # Algorithm Line 14: Migrate η̄
-        slope_bar = tf.linalg.matvec(A, tf.squeeze(eta_bar)) + b
-        eta_bar = eta_bar + epsilon_j * tf.expand_dims(slope_bar, 1)
         
         # Algorithm Line 14: Migrate η̄
         slope_bar = tf.linalg.matvec(A, tf.squeeze(particles_mean)) + b # It could be wrong even if it match the orginal matlab code

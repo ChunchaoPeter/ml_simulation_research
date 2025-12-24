@@ -312,9 +312,6 @@ class PFPF(EDHFilter):
         eta_bar = tf.expand_dims(self.auxiliary_trajectory, 1) if len(self.auxiliary_trajectory.shape) == 1 else self.auxiliary_trajectory
         eta_bar_mu_0 = tf.expand_dims(self.mu_0, 1) if len(self.mu_0.shape) == 1 else self.mu_0
 
-        print("eta_bar", eta_bar)
-        print(eta_bar_mu_0)
-
         # Algorithm Line 10: Set λ = 0
         # Algorithm Line 11: for j = 1, ..., N_λ do
         for j in range(self.n_lambda):
@@ -327,10 +324,6 @@ class PFPF(EDHFilter):
                                             lambda_j, model_params)
             
             # Algorithm Line 14: Migrate η̄
-            slope_bar = tf.linalg.matvec(A, tf.squeeze(eta_bar)) + b
-            eta_bar = eta_bar + epsilon_j * tf.expand_dims(slope_bar, 1)
-            print('herehere')
-            # Algorithm Line 14: Migrate η̄
             slope_bar = tf.linalg.matvec(A, self.particles_mean) + b # It could be wrong even if it match the orginal matlab code
             eta_bar = eta_bar + epsilon_j * tf.expand_dims(slope_bar, 1)
 
@@ -340,7 +333,6 @@ class PFPF(EDHFilter):
 
             particles_mean, _ = particle_estimate(log_weights, self.particles)
             self.particles_mean = particles_mean
-        # return particles
 
     def step(
         self,
