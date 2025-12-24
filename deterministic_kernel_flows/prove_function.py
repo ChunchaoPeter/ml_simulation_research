@@ -505,3 +505,117 @@ def log_likehood_density(particles_flowed, measurement, model_params):
     )
     log_likelihood = dist.log_prob(residual_t)  # (n_particle,) 
     return log_likelihood
+
+def multinomial_resample(weights):
+    """
+    Multinomial resampling.
+
+    Draws ancestry vector A^{1:N} where A^i ~ Cat(w^1,...,w^N)
+
+    Args:
+        weights: Normalized particle weights (N,)
+
+    Returns:
+        indices: Resampled particle indices (N,)
+    """
+    # Sample from categorical distribution
+    # This implements: A^i ~ Cat(w^1,...,w^N)
+    # Use log probabilities for numerical stability
+    logits = tf.math.log(weights + 1e-10)
+
+    # tf.random.categorical expects shape [batch_size, num_classes]
+    # and returns [batch_size, num_samples]
+    # We want to sample num_particles times from one distribution
+    logits_2d = tf.reshape(logits, [1, -1])
+    indices = tf.random.categorical(logits_2d, weights.shape[0], dtype=tf.int32)
+
+    # Reshape from [1, num_particles] to [num_particles]
+    indices = tf.reshape(indices, [-1])
+
+    # This method is much faster than using tfd.Categorical(probs=weights) 
+    return indices
+
+
+def force_resample(particles, weights):
+    """
+    Force resampling of all particles, ignoring the effective sample size.
+
+    Args:
+        particles: Current particles (state_dim, num_particles)
+        weights: Current weights (num_particles,)
+
+    Returns:
+        particles: Resampled particles (state_dim, num_particles)
+        weights: Uniform weights after resampling
+        eff: Compute effective sample size N_eff
+    """
+
+    # Always resample
+    indices = multinomial_resample(weights)
+
+    eff = 1.0 / tf.reduce_sum(weights ** 2)
+
+    # Resample particles
+    particles = tf.gather(particles, indices, axis=1)
+
+    # Reset weights to uniform
+    weights = tf.ones(particles.shape[1], dtype=tf.float32) / particles.shape[1]
+    
+
+    return particles, weights, eff
+
+
+def correctoinAndCalculateWeights(particles_flowed, 
+                                  vg,
+                                  measurement, 
+                                  log_jacobian_det_sum, 
+                                  model_params):
+    """
+    Weight update formula:
+        w_k ∝ [p(x_k|x_{k-1}) * p(z_k|x_k) / q(x_k|x_{k-1},z_k)] * w_{k-1}
+    
+    In log space:
+        log w_k = log p(x_k|x_{k-1}) + log p(z_k|x_k) - log q(...) + log w_{k-1}
+    
+    Args:
+        particles_flowed: Particles after flow (x_k), shape (state_dim, n_particle)
+        xp_prop: Propagated particles WITH noise (η_0), shape (state_dim, n_particle)
+        xp_prop_deterministic: Deterministic propagation (Φ·x_{k-1}), shape (state_dim, n_particle)
+        weights_prev: Previous weights, shape (n_particle,)
+        measurement: Current measurement, shape (n_sensor, 1)
+        log_jacobian_det_sum: Sum of log Jacobian determinants, shape (n_particle,)
+        model_params: Dictionary with model parameters
+    
+    Returns:
+        weights_updated: Updated normalized weights, shape (n_particle,)
+    """
+
+
+    Q = model_params['Q']
+    xp_prop_deterministic = vg['xp_prop_deterministic'] 
+    xp_prop = vg['xp_prop']
+    log_weights = vg['logW']
+
+    # Line 16: Calculate log proposal density
+    # log_proposal = log p(η_0|x_{k-1}) - log_jacobian_det_sum (n_particle, )
+    log_proposal = log_proposal_density(xp_prop, xp_prop_deterministic, Q, log_jacobian_det_sum)
+    
+    # Line 18: Calculate log process/prior density
+    # log_prior = log p(x_k|x_{k-1})
+    log_prior = log_process_density(particles_flowed, xp_prop_deterministic, Q)
+    
+    # Line 20: Calculate log likelihood
+    # llh = log p(z_k|x_k)
+    llh = log_likehood_density(particles_flowed, measurement, model_params)
+    
+    # Line 22: Weight update
+    # log w_k = log_prior + llh - log_proposal + log w_{k-1}
+    log_weights = log_prior + llh - log_proposal + log_weights
+        
+    # Line 23: Normalize by subtracting max
+    log_weights = log_weights - tf.reduce_max(log_weights)
+    
+    # Convert back from log space
+    partilcles_mean, weights = particle_estimate(log_weights, particles_flowed)
+
+    return weights, partilcles_mean
