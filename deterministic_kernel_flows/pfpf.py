@@ -67,6 +67,7 @@ class PFPF(EDHFilter):
         self,
         observation_jacobian: Callable,
         observation_model: Callable,
+        state_transition: Callable,
         n_particle: int = 100,
         n_lambda: int = 20,
         lambda_ratio: float = 1.2,
@@ -99,6 +100,8 @@ class PFPF(EDHFilter):
 
         self.resample_threshold = resample_threshold
 
+        self.state_transition = state_transition
+
         # Additional PFPF state
         self.weights = None
         self.log_weights = None
@@ -106,11 +109,13 @@ class PFPF(EDHFilter):
         # Intermediate computation states 
         self.particles_pred = None  # Propagated particles WITH noise
         self.particles_pred_deterministic = None  # Propagated WITHOUT noise
+        self.particles_previous = None # Previous step for particles
         self.particles_mean = None  # Mean of particles
         self.mu_0 = None  # Mean trajectory η̄_μ0
         self.auxiliary_trajectory = None  # Auxiliary trajectory for linearization
         self.P_pred = None  # Prior covariance P_{k|k-1}
-
+        self.M = None # the original mean 
+        
     def initialize(self, model_params: Dict) -> Tuple[tf.Tensor, tf.Tensor]:
         """
         Initialize particles with uniform weights.
@@ -134,8 +139,8 @@ class PFPF(EDHFilter):
 
         # Initialize intermediate states
         self.particles_mean = tf.squeeze(m0)  # Convert (state_dim, 1) to (state_dim,)
+        self.M = m0
         self.mu_0 = m0  # Mean trajectory
-        self.auxiliary_trajectory = m0  # Initially same as mu_0
         self.P_pred = self.P  # Initial covariance
 
         if self.verbose:
@@ -271,6 +276,72 @@ class PFPF(EDHFilter):
 
         return particles, weights, log_weights, N_eff.numpy()
 
+
+    def _particle_flow_edh(self, model_params, measurement):
+        """
+        Migrate particles from prior to posterior using EDH flow (global linearization).
+
+        Algorithm Lines 10-18 (EDH):
+        10  Set λ = 0
+        11  for j = 1, ..., N_λ do
+        12    Set λ = λ + ε_j
+        13    Calculate A_j(λ) and b_j(λ) with linearization at η̄
+        14    Migrate η̄
+        15    for i = 1, ..., Np do
+        16      Migrate particles
+        17    endfor
+        18  endfor
+
+        Args:
+            vg: include the relevant parameters
+            measurement: Current measurement, shape (n_sensor, 1)
+            P_pred: Prior covariance P, shape (state_dim, state_dim)
+            lambda_steps: Step sizes ε_j, shape (n_lambda,)
+            lambda_values: Cumulative lambda values λ_j, shape (n_lambda,)
+            eta_bar_mu_0: Mean trajectory η̄_0, shape (state_dim, 1)
+            model_params: Dictionary with observation model
+
+        Returns:
+            particles_flowed: Updated particles, shape (state_dim, n_particle)
+        """
+
+        P_pred = self.P_pred
+
+        log_weights = self.log_weights
+        # Initialize auxiliary trajectory for global linearization
+        eta_bar = tf.expand_dims(self.auxiliary_trajectory, 1) if len(self.auxiliary_trajectory.shape) == 1 else self.auxiliary_trajectory
+        eta_bar_mu_0 = tf.expand_dims(self.mu_0, 1) if len(self.mu_0.shape) == 1 else self.mu_0
+
+        print("eta_bar", eta_bar)
+        print(eta_bar_mu_0)
+
+        # Algorithm Line 10: Set λ = 0
+        # Algorithm Line 11: for j = 1, ..., N_λ do
+        for j in range(self.n_lambda):
+            # Algorithm Line 12: Set λ = λ + ε_j
+            epsilon_j = self.lambda_steps[j]   # Step size
+            lambda_j = self.lambda_values[j]   # Current lambda value
+            
+            # Algorithm Line 13: Compute A, b ONCE at global mean η̄
+            A, b = self._compute_flow_parameters(eta_bar, eta_bar_mu_0, P_pred, measurement,
+                                            lambda_j, model_params)
+            
+            # Algorithm Line 14: Migrate η̄
+            slope_bar = tf.linalg.matvec(A, tf.squeeze(eta_bar)) + b
+            eta_bar = eta_bar + epsilon_j * tf.expand_dims(slope_bar, 1)
+            print('herehere')
+            # Algorithm Line 14: Migrate η̄
+            slope_bar = tf.linalg.matvec(A, self.particles_mean) + b # It could be wrong even if it match the orginal matlab code
+            eta_bar = eta_bar + epsilon_j * tf.expand_dims(slope_bar, 1)
+
+            # Algorithm Lines 15-17: Migrate all particles using the same A, b
+            slopes = tf.matmul(A, self.particles) + tf.expand_dims(b, 1)
+            self.particles = self.particles + epsilon_j * slopes
+
+            particles_mean, _ = particle_estimate(log_weights, self.particles)
+            self.particles_mean = particles_mean
+        # return particles
+
     def step(
         self,
         measurement: tf.Tensor,
@@ -296,7 +367,7 @@ class PFPF(EDHFilter):
             measurement = tf.expand_dims(measurement, 1)
 
         # Store previous estimate (like x_est_prev in notebook)
-        x_est_prev = tf.expand_dims(self.particles_mean, 1) if len(self.particles_mean.shape) == 1 else self.particles_mean
+        x_est_prev = tf.expand_dims(self.M, 1) if len(self.M.shape) == 1 else self.M
 
         # Step 1: Propagate particles (with and without noise)
         # This corresponds to propagateAndEstimatePriorCovariance in notebook
@@ -311,25 +382,26 @@ class PFPF(EDHFilter):
         else:
             self.P_pred = self._estimate_covariance(self.particles_pred, model_params)
 
-        # Step 3: Update mean trajectory mu_0 (vg['mu_0'] in notebook)
+        # Step 3: Update mean trajectory mu_0 (This is line 5 - 6)
         # This is the deterministic propagation of the previous estimate
-        Phi = model_params['Phi']
-        self.mu_0 = tf.matmul(Phi, x_est_prev)
+        self.mu_0 = self.state_transition(x_est_prev, model_params, no_noise=True)
+
+        self.particles_previous = self.particles
+        self.particles = self.particles_pred
 
         # Step 4: Update auxiliary trajectory for linearization (vg['xp_auxiliary_individual'])
         # For EDH, this is the same as mu_0 (global linearization point)
-        self.auxiliary_trajectory = self.mu_0
+        mean_estimate, _ = particle_estimate(self.log_weights, self.particles)
+        self.auxiliary_trajectory = mean_estimate
+        self.particles_mean = mean_estimate
 
         # Step 5: Particle flow
-        # Uses self.P_pred and self.auxiliary_trajectory for linearization
-        particles_flowed = self._particle_flow(
-            self.particles_pred, measurement, self.P_pred, model_params
-        )
+        self._particle_flow_edh(model_params, measurement)
 
         # Step 6: PFPF weight update
         log_jacobian_det_sum = 0.0  # Can be computed for local linearization
         weights, log_weights = self._update_weights(
-            particles_flowed,
+            self.particles,
             self.particles_pred,
             self.particles_pred_deterministic,
             measurement,
@@ -338,18 +410,19 @@ class PFPF(EDHFilter):
         )
 
         # Step 7: Weighted estimate using particle_estimate from prove_function.py
-        mean_estimate, _ = particle_estimate(log_weights, particles_flowed)
+        mean_estimate, _ = particle_estimate(log_weights, self.particles)
+        self.particles_mean = mean_estimate
 
         # Step 8: Covariance update (vg['PU'] in notebook)
         if self.use_ekf:
             x_ekf_updated, P_updated = self._ekf_update(x_ekf_pred, self.P_pred, measurement)
             self.x_ekf = x_ekf_updated
         else:
-            P_updated = self._estimate_covariance(particles_flowed, model_params)
+            P_updated = self._estimate_covariance(self.particles, model_params)
 
         # Step 9: Resample if needed
         particles_resampled, weights_resampled, log_weights_resampled, N_eff = self._resample(
-            particles_flowed, weights
+            self.particles, weights
         )
 
         # Step 10: Update all internal state (replaces vg dictionary updates)
@@ -358,6 +431,7 @@ class PFPF(EDHFilter):
         self.log_weights = log_weights_resampled
         self.particles_mean = mean_estimate
         self.P = P_updated
+        self.M = mean_estimate
 
         return particles_resampled, mean_estimate, P_updated
 
@@ -407,6 +481,7 @@ class PFPF(EDHFilter):
         for t in range(T):
             if self.verbose and (t + 1) % 10 == 0:
                 print(f"  Step {t+1}/{T}")
+            print('t', t)
 
             z_t = tf.expand_dims(measurements[:, t], 1)
 
