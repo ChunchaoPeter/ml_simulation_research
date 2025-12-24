@@ -546,6 +546,127 @@ def observation_model(x, model_params, no_noise=False):
     return tf.reshape(z, [n_sensors, 1])
 
 @tf.function
+def observation_model_general(x, model_params, no_noise=False):
+    """
+    NONLINEAR observation model: z_k = h(x_k) + v_k
+
+    Each sensor measures the sum of acoustic amplitudes from all targets.
+    The amplitude from target i to sensor s decays with distance:
+
+    For each sensor s:
+        z_s = Σ_{i=1}^{n_targets} [Ψ / (r_i^α + d_0)] + v_s
+
+    where:
+        r_i = sqrt((x_i - s_x)^2 + (y_i - s_y)^2)  (Euclidean distance)
+        Ψ = amplitude at source (default 10)
+        α = inverse power (default 1)
+        d_0 = distance threshold (default 0.1)
+
+    MATLAB Reference: Acoustic_hfunc.m
+
+    Args:
+        x: Current state, shape (state_dim, N) - N data points
+           Format: [x1, y1, vx1, vy1, x2, y2, vx2, vy2, ...]
+           MATLAB: xp with same format
+        model_params: Dictionary of model parameters from initialize_acoustic_model()
+
+    Returns:
+        Observation z, shape (n_sensors, N)
+        MATLAB: y with shape (nSensor, nParticles)
+    """
+    # ============================================================
+    # Extract parameters from model_params dictionary
+    # ============================================================
+    state_dim = model_params['state_dim']                    # Total state dimension
+    sensor_positions = model_params['sensor_positions']      # (n_sensors, 2)
+    n_sensors = model_params['n_sensors']                    # Number of sensors
+    amplitude = model_params['amplitude']                    # Ψ: sound amplitude
+    inv_power = model_params['inv_power']                    # α: decay rate
+    d0 = model_params['d0']                                  # d_0: distance threshold
+    measurement_noise_std = model_params['measurement_noise_std']  # σ_w
+
+    # ============================================================
+    # Step 1: Extract target positions from state vector
+    # MATLAB: xx = xp(1:4:nTarget*4,:); xy = xp(2:4:nTarget*4,:); x = [xx;xy];
+    # ============================================================
+    # Get number of data points N
+    N = tf.shape(x)[1]
+    
+    # Extract x-coordinates: indices [0, 4, 8, 12, ...] for all targets
+    # Shape: (n_targets, N)
+    x_positions = tf.gather(x, tf.range(0, state_dim, 4), axis=0)
+
+    # Extract y-coordinates: indices [1, 5, 9, 13, ...] for all targets
+    # Shape: (n_targets, N)
+    y_positions = tf.gather(x, tf.range(1, state_dim, 4), axis=0)
+
+    # Stack to get (n_targets, N, 2) tensor of [x, y] coordinates
+    target_positions = tf.stack([x_positions, y_positions], axis=2)
+
+    # ============================================================
+    # Step 2: Compute distances from all targets to all sensors
+    # MATLAB: v = bsxfun(@minus,sensorsPos,permute(x,[1 3 2]));
+    #         v = v.^2;
+    #         v = v(1:nTarget,:,:)+v(nTarget+1:2*nTarget,:,:);
+    #         v = sqrt(v);
+    # ============================================================
+    # sensor_positions: (n_sensors, 2)
+    # target_positions: (n_targets, N, 2)
+
+    # Expand dimensions to enable broadcasting:
+    # (n_sensors, 2) -> (n_sensors, 1, 1, 2)
+    sensors_expanded = tf.expand_dims(tf.expand_dims(sensor_positions, axis=1), axis=1)
+    # (n_targets, N, 2) -> (1, n_targets, N, 2)
+    targets_expanded = tf.expand_dims(target_positions, axis=0)
+
+    # Compute differences via broadcasting: (n_sensors, n_targets, N, 2)
+    # diff[s, i, n, :] = [x_i^n - s_x, y_i^n - s_y]
+    diff = targets_expanded - sensors_expanded
+
+    # Compute squared distances: sum over last dimension
+    # distances_sq[s, i, n] = (x_i^n - s_x)^2 + (y_i^n - s_y)^2
+    distances_sq = tf.reduce_sum(tf.square(diff), axis=3)  # Shape: (n_sensors, n_targets, N)
+
+    # Take square root to get Euclidean distances
+    # distances[s, i, n] = r_i,s^n
+    distances = tf.sqrt(distances_sq)  # Shape: (n_sensors, n_targets, N)
+
+    # ============================================================
+    # Step 3: Compute amplitude contributions
+    # MATLAB: v = likeparams.Amp./ (v.^likeparams.invPow+likeparams.d0);
+    # ============================================================
+    # For each (sensor, target, data_point) triplet, compute: Ψ / (r^α + d_0)
+    # amplitudes[s, i, n] = Ψ / (distances[s, i, n]^α + d_0)
+    amplitudes = amplitude / (tf.pow(distances, inv_power) + d0)
+
+    # ============================================================
+    # Step 4: Sum contributions from all targets for each sensor
+    # MATLAB: v = sum(v,1);
+    # ============================================================
+    # For each sensor s and data point n: z_s^n = Σ_{i=1}^{n_targets} amplitudes[s, i, n]
+    z_true = tf.reduce_sum(amplitudes, axis=1)  # Shape: (n_sensors, N)
+
+    # ============================================================
+    # Step 5: Add measurement noise v ~ N(0, σ²_w)
+    # MATLAB: Noise is added during measurement generation in GenerateMeasurements.m
+    # ============================================================
+    if no_noise:
+        return z_true
+
+    noise = tf.random.normal(
+        shape=tf.shape(z_true),
+        mean=0.0,
+        stddev=measurement_noise_std,
+        dtype=tf.float32
+    )
+
+    z = z_true + noise
+
+    # Return as (n_sensors, N)
+    return z
+
+
+@tf.function
 def compute_observation_jacobian(x, model_params):
     """
     Compute the Jacobian matrix H = ∂h/∂x of the acoustic observation model.
