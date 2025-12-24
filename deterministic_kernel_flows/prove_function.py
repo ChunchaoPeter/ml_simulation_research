@@ -1,5 +1,13 @@
 import tensorflow as tf
+import tensorflow_probability as tfp
+tfd = tfp.distributions
 
+from acoustic_function import (
+    state_transition,
+    observation_model,
+    compute_observation_jacobian,
+    observation_model_general
+)
 
 
 
@@ -467,3 +475,33 @@ def log_process_density(xp, xp_prop_deterministic, Q):
     log_prior = dist.log_prob(xp)  # (n_particle,) 
     
     return log_prior
+
+def log_likehood_density(particles_flowed, measurement, model_params):
+    """
+    Compute likelihood p(z_k|x_k) for Gaussian measurement model.
+    
+    Equation:
+      p(z_k|x_k) = N(z_k; h(x_k), R)
+    
+    Args:
+        x: State, shape (state_dim, 1)
+        measurement: Measurement z_k, shape (n_sensor, 1)
+        model_params: Dictionary with observation model and R
+    
+    Returns:
+        likelihood: Scalar likelihood value
+    """
+    R = model_params['R']
+    z_pre = observation_model_general(particles_flowed, model_params, no_noise=True)
+    residual = measurement - z_pre
+    residual_t = tf.transpose(residual)     # (n_particle, state_dim)
+    mean_zeros = tf.zeros(residual_t.shape, dtype=tf.float32)   # (n_particle, state_dim)
+
+    scale_tril = tf.linalg.cholesky(R)
+
+    dist = tfd.MultivariateNormalTriL(
+        loc=mean_zeros,                 # shape (n_particle, di)
+        scale_tril=scale_tril       # shape (state_dim, state_dim), broadcasted
+    )
+    log_likelihood = dist.log_prob(residual_t)  # (n_particle,) 
+    return log_likelihood
