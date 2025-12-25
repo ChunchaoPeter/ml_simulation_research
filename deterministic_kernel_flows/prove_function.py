@@ -1,6 +1,8 @@
 import tensorflow as tf
 import tensorflow_probability as tfp
 import matplotlib.pyplot as plt
+from itertools import permutations
+
 tfd = tfp.distributions
 
 from acoustic_function import (
@@ -718,3 +720,84 @@ def plot_true_vs_estimated_trajectories(
 
     plt.tight_layout()
     plt.show()
+
+################################## ------ Evaluation matrix -------##################################################
+
+def compute_omat(true_states, estimated_states, num_targets, n_target, p=1.0):
+    """
+    Compute OMAT metric using pure TensorFlow.
+
+    Args:
+        true_states: TensorFlow tensor, shape (state_dim,) or (state_dim, T)
+        estimated_states: TensorFlow tensor, same shape
+        num_targets: number of target 
+        n_target: Dimension of each target's state
+        p: Exponent (default: 1.0)
+
+    Returns:
+        OMAT error (scalar tensor)
+    """
+    # Handle single time step
+    if len(true_states.shape) == 1:
+        true_states = tf.expand_dims(true_states, 1)
+    if len(estimated_states.shape) == 1:
+        estimated_states = tf.expand_dims(estimated_states, 1)
+
+    # Build cost matrix: cost[i,j] = distance from true target i to estimated target j
+    cost_matrix = []
+    for i in range(num_targets):
+        row = []
+        for j in range(num_targets):
+            # Extract all n_target dimensions for target i and j
+            # This handles any dimension: [x], [x,y], [x,y,z], [x,y,vx,vy], etc.
+            # Extract all n_target dimensions
+            true_pos = true_states[i*n_target:(i+1)*n_target]
+            est_pos = estimated_states[j*n_target:(j+1)*n_target]
+
+            # Euclidean distance across all dimensions
+            diff = true_pos - est_pos
+            dist = tf.sqrt(tf.reduce_sum(diff**2, axis=0))  # Sum over all n_target dimensions
+            avg_dist = tf.reduce_mean(dist) ## aim to reduce the dimension 
+            row.append(avg_dist ** p) ## calculate true pos for all different target of estimate values 
+        cost_matrix.append(row) ## [i, j] i means the true target, j mean the estimate target
+
+    cost_matrix = tf.stack([tf.stack(row) for row in cost_matrix])
+
+    # ============================================================
+    # MINIMIZATION: Find optimal assignment
+    # ============================================================
+    # This implements: min_{π∈Π} Σ d(x_c, x̂_{π(c)})^p
+    #
+    # We try ALL permutations and find the one with MINIMUM total distance.
+    #
+    # Example: perm = (1, 0, 3, 2) means:
+    #   True target 0 → Estimated target 1
+    #   True target 1 → Estimated target 0
+    #   True target 2 → Estimated target 3
+    #   True target 3 → Estimated target 2
+    # ============================================================
+
+    min_cost = tf.constant(float('inf'), dtype=tf.float32)
+
+    for perm in permutations(range(num_targets)):
+        # Calculate total cost for this assignment
+        cost = tf.reduce_sum([cost_matrix[i, perm[i]] for i in range(num_targets)])
+
+        # *** MINIMIZATION HAPPENS HERE ***
+        # Keep the smallest cost across all permutations
+        min_cost = tf.minimum(min_cost, cost)
+
+    # Apply OMAT formula: (min_cost / num_targets)^(1/p)
+    return (min_cost / num_targets) ** (1.0 / p)
+
+
+def compute_omat_per_timestep(true_states, estimated_states, num_targets, n_target, p=1.0):
+    """Compute OMAT at each time step using pure TensorFlow."""
+    T = tf.shape(true_states)[1]
+    errors = tf.TensorArray(dtype=tf.float32, size=T)
+
+    for t in tf.range(T):
+        error = compute_omat(true_states[:, t], estimated_states[:, t],num_targets, n_target, p)
+        errors = errors.write(t, error)
+
+    return errors.stack()
