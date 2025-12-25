@@ -28,7 +28,7 @@ from prove_function import (
 tfd = tfp.distributions
 
 
-class PFPF(EDHFilter):
+class PFPF_EDH(EDHFilter):
     """
     Particle Filtering with Particle Flow (PFPF)
 
