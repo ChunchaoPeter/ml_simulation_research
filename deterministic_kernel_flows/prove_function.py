@@ -801,3 +801,58 @@ def compute_omat_per_timestep(true_states, estimated_states, num_targets, n_targ
         errors = errors.write(t, error)
 
     return errors.stack()
+
+
+def find_acoustic_position(estimates, ground_truth):
+    """
+    Extracts position coordinates from acoustic estimates and ground truth data.
+    
+    This function processes 4 acoustic sources by extracting their 2D position 
+    coordinates from interleaved data arrays. It assumes that position data for 
+    each source is stored as 2 consecutive rows at indices [0:2], [4:6], [8:10], 
+    and [12:14], suggesting the input arrays contain other acoustic parameters 
+    (e.g., velocity, acceleration) interspersed with position data.
+    
+    Args:
+        estimates: A tensor or array where position estimates are stored at 
+                   indices [i*4:i*4+2] for each source i (shape: [16+, num_samples])
+        ground_truth: A tensor or array with the same structure as estimates, 
+                      containing ground truth position values
+    
+    Returns:
+        tuple: A tuple containing:
+            - estimate_position: Concatenated tensor of all estimated positions 
+                                (shape: [8, num_samples])
+            - ground_truth_position: Concatenated tensor of all ground truth positions 
+                                    (shape: [8, num_samples])
+    
+    Example:
+        If processing 4 sound sources with x,y coordinates stored every 4 rows,
+        this extracts rows [0:2, 4:6, 8:10, 12:14] from both inputs and 
+        concatenates them into [8, :] shaped tensors.
+    """
+    estimate_position = []
+    ground_truth_position = []
+    for i in range(4):
+        index_p = i * 4
+        position_s = estimates[index_p:index_p+2, :]
+        estimate_position.append(position_s)
+        position_g = ground_truth[index_p:index_p+2, :]
+        ground_truth_position.append(position_g)
+    estimate_position = tf.concat(estimate_position, axis=0)
+    ground_truth_position = tf.concat(ground_truth_position, axis=0)
+    return estimate_position, ground_truth_position
+
+
+def compute_position_error_noraml_acousitc(estimates, ground_truth, n_targets):
+    errors = []
+    for i in range(n_targets):
+        x_idx = i * 4
+        y_idx = i * 4 + 1
+        x_err = estimates[x_idx, :] - ground_truth[x_idx, :]
+        y_err = estimates[y_idx, :] - ground_truth[y_idx, :]
+        error = tf.sqrt(x_err**2 + y_err**2)
+        errors.append(error)
+    errors = tf.stack(errors, axis=0)
+    mean_error = tf.reduce_mean(errors, axis=0)
+    return errors, mean_error
