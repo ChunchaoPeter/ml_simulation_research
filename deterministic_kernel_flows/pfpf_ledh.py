@@ -54,7 +54,6 @@ class PFPF_LEDH(PFPF_EDH):
         lambda_ratio: float = 1.2,
         use_ekf: bool = False,
         ekf_filter: Optional['ExtendedKalmanFilter'] = None,
-        resample_threshold: float = 0.5,
         verbose: bool = True
     ):
         """
@@ -71,7 +70,6 @@ class PFPF_LEDH(PFPF_EDH):
             lambda_ratio: Exponential spacing ratio (default: 1.2)
             use_ekf: Use EKF for covariance tracking (default: False)
             ekf_filter: Pre-configured EKF filter instance
-            resample_threshold: Resample when N_eff/N < threshold (default: 0.5)
             verbose: Print progress information (default: True)
         """
         # Initialize parent PFPF_EDH
@@ -80,7 +78,7 @@ class PFPF_LEDH(PFPF_EDH):
             n_particle, n_lambda, lambda_ratio,
             use_local=False,  # We'll override flow method
             use_ekf=use_ekf, ekf_filter=ekf_filter,
-            resample_threshold=resample_threshold, verbose=verbose
+            verbose=verbose
         )
 
         # LEDH-specific state
@@ -343,13 +341,14 @@ class PFPF_LEDH(PFPF_EDH):
 
 
         # Step 9: Resample if needed
-        particles_resampled, weights_resampled, log_weights_resampled, N_eff = self._resample(
+        particles_resampled, weights_resampled, log_weights_resampled, N_eff, indices = self._resample(
             self.particles, weights
         )
+        P_all_resampled = tf.gather(self.P_all, indices, axis=0)
+
 
         # Step 10: Update all internal state
-        self.P = P_updated
-        
+        self.P_all = P_all_resampled
         self.particles = particles_resampled
         self.weights = weights_resampled
         self.log_weights = log_weights_resampled
@@ -386,7 +385,6 @@ class PFPF_LEDH(PFPF_EDH):
             print(f"  Lambda ratio: {self.lambda_ratio}")
             print(f"  Linearization: Local (LEDH)")
             print(f"  EKF Covariance: {'Enabled' if self.use_ekf else 'Disabled'}")
-            print(f"  Resample threshold: {self.resample_threshold}")
             print(f"  Time steps: {T}")
 
         # Initialize
