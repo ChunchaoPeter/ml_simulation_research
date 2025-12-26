@@ -97,12 +97,12 @@ class PFPF_EDH(EDHFilter):
         self.particles_mean = None  # Mean of particles
         self.mu_0 = None  # Mean trajectory η̄_μ0, this is strong connection with particles_mean
         self.auxiliary_trajectory = None  # Auxiliary trajectory for linearization. It is used for calculate A, b
-        self.P_pred = None  # Prior covariance P_{k|k-1}, this is also can be called prediction covariance
-        self.M = None # the original mean, this one is used to calcuate the mu_0. 
+        self.P_pred = None  # Prior covariance P_{k|k-1}, this is also can be called prediction covariance % Kalman variables: preditive varianace
+        self.M = None # the original mean, this one is used to calcuate the mu_0. % Kalman variables: mean
 
         ## There are many parameters that can be used interchangeably.
         ## I have not reduced the duplicated variables, as keeping them
-        ## makes the code easier to follow. self.P is the posterior variance.
+        ## makes the code easier to follow. self.P is the posterior variance. % Kalman variables: updated varianace
 
     def initialize(self, model_params: Dict) -> Tuple[tf.Tensor, tf.Tensor]:
         """
