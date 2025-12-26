@@ -14,93 +14,6 @@ from acoustic_function import (
 
 
 
-def compute_lambda_steps(n_lambda, lambda_ratio):
-    """
-    Compute exponentially spaced lambda steps.
-    
-    Args:
-        n_lambda: Number of lambda steps (typically 20)
-        lambda_ratio: Ratio for exponential spacing (typically 1.2)
-    
-    Returns:
-        lambda_steps: Step sizes ε_j, shape (n_lambda,)
-        lambda_values: Cumulative lambda values λ_j, shape (n_lambda,)
-    """
-    q = lambda_ratio
-    n = n_lambda
-    
-    # Initial step size: ε_1 = (1-q)/(1-q^n)
-    epsilon_1 = (1 - q) / (1 - q**n)
-    
-    # Step sizes: ε_j = ε_1 * q^(j-1) for j=1,...,n
-    step_sizes = [epsilon_1 * (q**j) for j in range(n)]
-    lambda_steps = tf.constant(step_sizes, dtype=tf.float32)
-    
-    # Cumulative lambda values: λ_j = Σ_{i=1}^j ε_i
-    lambda_values = tf.cumsum(lambda_steps)
-    
-    return lambda_steps, lambda_values
-
-
-def initialize_particles(model_params, n_particle):
-    """
-    Initialize particles from Gaussian prior.
-
-    Algorithm Lines 1-2:
-      1  Draw {x_0^i}_{i=1}^N from the prior p_0(x)
-      2  Set {w_0^i}_{i=1}^N = 1/Np
-
-    Args:
-        model_params: Dictionary from initialize_acoustic_model()
-        n_particle: Number of particles
-
-    Returns:
-        particles: Initial particles, shape (state_dim, n_particle)
-        weights: Initial weights, shape (n_particle,)
-        m0: Random initial mean, shape (state_dim, 1)
-        P0: Initial covariance, shape (state_dim, state_dim)
-    """
-    state_dim = model_params['state_dim']
-    x0 = model_params['x0_initial_target_states']  # (state_dim, 1)
-    n_targets = model_params['n_targets']
-    sim_area_size = model_params['sim_area_size']
-
-    # Initial uncertainty from paper
-    sigma0_single = tf.constant(
-        [0.1**0.5, 0.1**0.5, 0.0005**0.5, 0.0005**0.5],
-        dtype=tf.float32
-    )    
-    sigma0 = tf.tile(sigma0_single, [n_targets])
-    # Line 2: P_0 = diag(σ_0^2)
-    P0 = tf.linalg.diag(tf.square(sigma0))
-
-    # Sample random mean m0 and ensure it's within bounds
-    out_of_bound = True
-    while out_of_bound:
-        noise = tf.random.normal((state_dim, 1), dtype=tf.float32)
-        m0 = x0 + tf.expand_dims(sigma0, 1) * noise
-
-        # Check if all target positions are within surveillance region
-        x_positions = m0[0::4, 0]  # indices 0, 4, 8, 12, ... (x positions)
-        y_positions = m0[1::4, 0]  # indices 1, 5, 9, 13, ... (y positions)
-
-        # Check bounds: all positions should be in [0, sim_area_size]
-        x_in_bounds = tf.reduce_all(x_positions >= 0.0) and tf.reduce_all(x_positions <= sim_area_size)
-        y_in_bounds = tf.reduce_all(y_positions >= 0.0) and tf.reduce_all(y_positions <= sim_area_size)
-
-        if x_in_bounds and y_in_bounds:
-            out_of_bound = False
-
-    # Sample particles around m0
-    noise = tf.random.normal((state_dim, n_particle), dtype=tf.float32)
-    particles = m0 + tf.expand_dims(sigma0, 1) * noise
-    
-    # Initialize uniform weights
-    weights = tf.ones(n_particle, dtype=tf.float32) / n_particle
-
-    return particles, weights, m0, P0
-
-
 def propagate_particles(particles, model_params, no_noise=False):
     """
     Propagate particles through motion model.
@@ -727,11 +640,13 @@ def compute_omat(true_states, estimated_states, num_targets, n_target, p=1.0):
     """
     Compute OMAT metric using pure TensorFlow.
 
+    d_p(X, \hat{X}) = \left(\frac{1}{C} \min_{\pi \in \Pi} \sum_{c=1}^C d(x_c, \hat{x}_{\pi(c)})^p\right)^{1/p}
+    
     Args:
         true_states: TensorFlow tensor, shape (state_dim,) or (state_dim, T)
         estimated_states: TensorFlow tensor, same shape
         num_targets: number of target 
-        n_target: Dimension of each target's state
+        n_target: Dimension of each target's state; # Each target has 2 state dimensions (e.g., x, y)
         p: Exponent (default: 1.0)
 
     Returns:
