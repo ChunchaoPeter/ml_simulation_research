@@ -263,7 +263,7 @@ class PFPF_EDH(EDHFilter):
         else:
             log_weights = tf.math.log(weights)
 
-        return particles, weights, log_weights, N_eff
+        return particles, weights, log_weights, N_eff, indices
 
 
     def _particle_flow_edh(self, model_params, measurement):
@@ -409,7 +409,7 @@ class PFPF_EDH(EDHFilter):
             P_updated = self._estimate_covariance(self.particles, model_params)
 
         # Step 9: Resample if needed
-        particles_resampled, weights_resampled, log_weights_resampled, N_eff = self._resample(
+        particles_resampled, weights_resampled, log_weights_resampled, N_eff, _ = self._resample(
             self.particles, weights
         )
 

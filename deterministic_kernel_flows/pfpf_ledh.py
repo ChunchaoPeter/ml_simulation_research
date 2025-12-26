@@ -41,7 +41,7 @@ class PFPF_LEDH(PFPF_EDH):
         - Higher computational cost but better accuracy for nonlinear models
 
     Additional Attributes:
-        theta: Jacobian determinant products for each particle, shape (n_particle,)
+        log_jacobian_det_sum: Jacobian determinant products for each particle, shape (n_particle,)
     """
 
     def __init__(
@@ -84,13 +84,17 @@ class PFPF_LEDH(PFPF_EDH):
         )
 
         # LEDH-specific state
-        self.theta = None  # Jacobian determinant products for each particle
+        self.log_jacobian_det_sum = None  # Jacobian determinant products for each particle
+        self.P_all = None  # P^{i}k_1 for each partical (Kalman variables: updated variance)
+        self.P_pred_all = None # It has the same dimension as P_all (Kalman variables: updated variance)
+        self.mu_0_all = None # It has the same dimension as P_all (Kalman variables: mean)
+        self.M_prior_all = None # The mean of the Kalman variables
 
     def initialize(self, model_params: Dict) -> Tuple[tf.Tensor, tf.Tensor]:
         """
         Initialize particles with uniform weights.
 
-        Extends parent initialization to include theta initialization.
+        Extends parent initialization to include log_jacobian_det_sum initialization and add P_all.
 
         Args:
             model_params: Dictionary with model parameters
@@ -101,8 +105,12 @@ class PFPF_LEDH(PFPF_EDH):
         """
         particles, m0 = super().initialize(model_params)
 
-        # Initialize theta for Jacobian determinants (Algorithm 1, Line 8)
-        self.theta = tf.ones(self.n_particle, dtype=tf.float32)
+        # Initialize log_jacobian_det_sum for Jacobian determinants (Algorithm 1, Line 8)
+        self.log_jacobian_det_sum = tf.zeros(self.n_particle, dtype=tf.float32)
+
+        # Initialize the P^{i}k_1 and P_pred_all for each partical as we calculate Local
+        self.P_all = tf.repeat(self.P[None, :, :], repeats=self.n_particle, axis=0)
+        self.P_pred_all = tf.repeat(self.P_pred[None, :, :], repeats=self.n_particle, axis=0)
 
         if self.verbose:
             print("  Initialized PFPF_LEDH (local linearization)")
@@ -137,17 +145,15 @@ class PFPF_LEDH(PFPF_EDH):
             measurement: Current measurement, shape (n_sensor, 1)
 
         Returns:
-            theta: Jacobian determinant products for each particle
+            log_jacobian_det_sum: log theta +  Log Jacobian determinant products for each particle
         """
-        P_pred = self.P_pred
-
-        # Initialize theta for tracking Jacobian determinants (Line 8)
-        theta = tf.ones(self.n_particle, dtype=tf.float32)
 
         # Each particle gets its own auxiliary trajectory η̄ᵢ
         # Initialize with predicted particles
-        eta_bar_i = tf.identity(self.particles)  # shape: (state_dim, n_particle)
+        eta_bar = self.auxiliary_individual
         eta_bar_mu_0 = tf.expand_dims(self.mu_0, 1) if len(self.mu_0.shape) == 1 else self.mu_0
+        log_jacobian_det_sum = tf.zeros(self.n_particle)
+        log_weights = self.log_weights
 
         # Algorithm Line 11: Set λ = 0
         # Algorithm Line 12: for j = 1, ..., N_λ do
@@ -160,64 +166,69 @@ class PFPF_LEDH(PFPF_EDH):
             # We'll process all particles in parallel for efficiency
 
             # Lists to store per-particle flow parameters
-            A_list = []
-            b_list = []
-            det_list = []
+            slope_bar_list = []
+            slopes_list = []
+            log_jacobian_det_list = []
 
             for i in range(self.n_particle):
                 # Algorithm Line 15: Set η̄₀ = η̄ᵢ and P = Pᵢ
-                eta_bar_i_current = tf.expand_dims(eta_bar_i[:, i], 1)  # (state_dim, 1)
+                eta_bar_i_current = tf.expand_dims(eta_bar[:, i], 1)  # (state_dim, 1)
+                P_pred_all_i_current = self.P_pred_all[i]
+                particles_i = tf.expand_dims(self.particles[:,i], 1)
 
                 # Algorithm Line 16: Calculate Aⁱⱼ(λ) and bⁱⱼ(λ)
                 # with linearization at η̄ᵢ (local linearization)
                 A_i, b_i = self._compute_flow_parameters(
                     eta_bar_i_current,  # Linearize at this particle
                     eta_bar_mu_0,
-                    P_pred,
+                    P_pred_all_i_current,
                     measurement,
                     lambda_j,
                     model_params
                 )
+                
+                # Algorithm Line 17-18: Calculate part of them
+                slope_bar_i = tf.matmul(A_i, eta_bar_i_current) + tf.expand_dims(b_i, 1)
+                slopes_i = tf.matmul(A_i, particles_i) + tf.expand_dims(b_i, 1)
 
-                A_list.append(A_i)
-                b_list.append(b_i)
+                # Algorithm Line 19: Calculate part of θⁱ = θⁱ|det(I + εⱼAⁱⱼ(λ))|
+                dim = tf.shape(A_i)[0]  # or tf.constant(dim, dtype=tf.int32)
+                I = tf.eye(dim, dtype=A_i.dtype)
+                J = I + epsilon_j * A_i
+                log_jacobian_det_i = tf.math.log(
+                    tf.math.abs(
+                        tf.linalg.det(J)
+                    )
+                )
 
-                # Algorithm Line 19: Calculate θⁱ = θⁱ / |det(I + εⱼAⁱⱼ(λ))|
-                I = tf.eye(self.particles.shape[0], dtype=tf.float32)
-                det_i = tf.abs(tf.linalg.det(I + epsilon_j * A_i))
-                det_list.append(det_i)
+                slope_bar_list.append(slope_bar_i)
+                slopes_list.append(slopes_i)
+                log_jacobian_det_list.append(log_jacobian_det_i)
+
+
 
             # Stack flow parameters for vectorized computation
-            A_stacked = tf.stack(A_list, axis=0)  # (n_particle, state_dim, state_dim)
-            b_stacked = tf.stack(b_list, axis=0)  # (n_particle, state_dim)
-            det_stacked = tf.stack(det_list, axis=0)  # (n_particle,)
+            slope_bar_matrix = tf.concat(slope_bar_list, axis=1) # (state_dim, n_particle)
+            slopes_matrix = tf.concat(slopes_list, axis=1)  # (state_dim, n_particle)
+            log_jacobian_det_vector = tf.stack(log_jacobian_det_list)  # (n_particle, )
 
-            # Update theta (product of determinants)
-            theta = theta / det_stacked
+
 
             # Algorithm Line 17: Migrate η̄ᵢ
             # Algorithm Line 18: Migrate particles
-            for i in range(self.n_particle):
-                A_i = A_stacked[i]
-                b_i = b_stacked[i]
+            # Migrate auxiliary trajectory
+            self.auxiliary_individual = self.auxiliary_individual + epsilon_j * slope_bar_matrix
+            # Migrate particle
+            self.particles = self.particles + epsilon_j * slopes_matrix
+            
+            # Algorithm Line 19: Calculate part of θⁱ = θⁱ|det(I + εⱼAⁱⱼ(λ))|
+            log_jacobian_det_sum = log_jacobian_det_sum + log_jacobian_det_vector
+            log_jacobian_det_sum = log_jacobian_det_sum - tf.reduce_max(log_jacobian_det_sum)
 
-                # Migrate auxiliary trajectory
-                slope_bar_i = tf.linalg.matvec(A_i, eta_bar_i[:, i]) + b_i
-                eta_bar_i = tf.tensor_scatter_nd_update(
-                    eta_bar_i,
-                    [[k, i] for k in range(eta_bar_i.shape[0])],
-                    eta_bar_i[:, i] + epsilon_j * slope_bar_i
-                )
+            particles_mean, _ = particle_estimate(log_weights, self.particles)
+            self.particles_mean = particles_mean
 
-                # Migrate particle
-                slope_i = tf.linalg.matvec(A_i, self.particles[:, i]) + b_i
-                self.particles = tf.tensor_scatter_nd_update(
-                    self.particles,
-                    [[k, i] for k in range(self.particles.shape[0])],
-                    self.particles[:, i] + epsilon_j * slope_i
-                )
-
-        return theta
+        return log_jacobian_det_sum
 
     def step(
         self,
@@ -247,53 +258,89 @@ class PFPF_LEDH(PFPF_EDH):
         # Store previous estimate
         x_est_prev = tf.expand_dims(self.M, 1) if len(self.M.shape) == 1 else self.M
 
-        # Step 1: Propagate particles (Algorithm 1, Lines 6-7)
+        # Step 1: Update mean trajectory mu_0, that is for global case in for calculating A_i and b_i
+        self.mu_0 = self.state_transition(x_est_prev, model_params, no_noise=True)
+        
+        # Step 2: Estimate prior covariance (Algorithm 1, Line 4 - 5)
+
+        # for i in range(self.n_particle):
+        #     if self.use_ekf:
+        #         x_ekf_pred, self.P_pred_all = self._ekf_predict(self.particles, self.P)
+        #     else:
+        #         return 'Need to use ekf'
+
+        P_pred_list = []
+        M_prior_list = []
+        for i in range(self.n_particle):
+            particles_i = tf.expand_dims(self.particles[:,i], 1)
+            
+            if self.use_ekf:
+                x_ekf_pred, P_pred = self._ekf_predict(
+                    particles_i, 
+                    self.P_all[i]
+                )
+                P_pred_list.append(P_pred)
+                M_prior_list.append(x_ekf_pred)
+            else:
+                raise RuntimeError("EKF must be enabled")
+        self.P_pred_all = tf.stack(P_pred_list, axis=0)
+        self.M_prior_all = tf.concat(M_prior_list, axis=1)
+
+        # Step 3: Propagate particles (Algorithm 1, Lines 6-10)
         self.particles_pred = self._propagate_particles(self.particles, model_params)
         self.particles_pred_deterministic = self._propagate_particles_deterministic(
             self.particles, model_params
         )
 
-        # Step 2: Estimate prior covariance (Algorithm 1, Line 5)
-        if self.use_ekf:
-            x_ekf_pred, self.P_pred = self._ekf_predict(self.x_ekf, self.P)
-        else:
-            self.P_pred = self._estimate_covariance(self.particles_pred, model_params)
-
-        # Step 3: Update mean trajectory mu_0 (Algorithm 1, Line 9)
-        self.mu_0 = self.state_transition(x_est_prev, model_params, no_noise=True)
+        self.mu_0_all = self._propagate_particles_deterministic(
+            self.particles, model_params
+        )
+        self.auxiliary_individual = self._propagate_particles_deterministic(
+            self.particles, model_params
+        )
 
         self.particles_previous = self.particles
         self.particles = self.particles_pred
 
         # Step 4: Update auxiliary trajectory for linearization
         mean_estimate, _ = particle_estimate(self.log_weights, self.particles)
-        self.auxiliary_trajectory = mean_estimate
         self.particles_mean = mean_estimate
 
-        # Step 5: LEDH Particle flow (Algorithm 1, Lines 11-21)
-        theta = self._particle_flow_ledh(model_params, measurement)
+        # self.auxiliary_trajectory = mean_estimate
 
-        # Step 6: PFPF weight update with Jacobian determinants (Algorithm 1, Line 24)
-        # w^i_k = p(x^i_k|x^i_{k-1})p(z_k|x^i_k)θ^i / p(η^i_0|x^i_{k-1}) * w^i_{k-1}
-        weights, log_weights = self._update_weights_ledh(
+        # Step 5: LEDH Particle flow (Algorithm 1, Lines 11-21)
+        log_jacobian_det_sum = self._particle_flow_ledh(model_params, measurement)
+        self.log_jacobian_det_sum = log_jacobian_det_sum
+
+
+        # Step 6: PFPF weight update with Jacobian determinants (Algorithm 1, Line 22-27)
+        weights, log_weights = self._update_weights(
             self.particles,
             self.particles_pred,
             self.particles_pred_deterministic,
             measurement,
-            theta,  # Use Jacobian determinants
+            log_jacobian_det_sum,  # Use Log Jacobian determinants
             model_params
         )
 
-        # Step 7: Weighted estimate (Algorithm 1, Line 27)
+        # Step 7: Weighted estimate (Algorithm 1, Line 30)
         mean_estimate, _ = particle_estimate(log_weights, self.particles)
         self.particles_mean = mean_estimate
 
-        # Step 8: Covariance update (Algorithm 1, Line 26)
-        if self.use_ekf:
-            x_ekf_updated, P_updated = self._ekf_update(x_ekf_pred, self.P_pred, measurement)
-            self.x_ekf = x_ekf_updated
-        else:
-            P_updated = self._estimate_covariance(self.particles, model_params)
+        # Step 8: Covariance update (Algorithm 1, Line 26-29)
+        P_update_list = []
+        for i in range(self.n_particle): 
+            particles_i = tf.expand_dims(self.M_prior_all[:,i], 1)
+            if self.use_ekf:
+                x_ekf_updated, P_updated = self._ekf_predict(
+                    particles_i, 
+                    self.P_pred_all[i]
+                )
+                P_update_list.append(P_updated)
+            else:
+                raise RuntimeError("EKF must be enabled")
+        self.P_all = tf.stack(P_update_list, axis=0)
+
 
         # Step 9: Resample if needed
         particles_resampled, weights_resampled, log_weights_resampled, N_eff = self._resample(
@@ -301,75 +348,16 @@ class PFPF_LEDH(PFPF_EDH):
         )
 
         # Step 10: Update all internal state
+        self.P = P_updated
+        
         self.particles = particles_resampled
         self.weights = weights_resampled
         self.log_weights = log_weights_resampled
         self.particles_mean = mean_estimate
-        self.P = P_updated
         self.M = mean_estimate
 
         return particles_resampled, mean_estimate, P_updated, N_eff
-
-    def _update_weights_ledh(
-        self,
-        particles_flowed: tf.Tensor,
-        particles_pred: tf.Tensor,
-        particles_pred_deterministic: tf.Tensor,
-        measurement: tf.Tensor,
-        theta: tf.Tensor,
-        model_params: Dict
-    ) -> Tuple[tf.Tensor, tf.Tensor]:
-        """
-        Update particle weights using PFPF_LEDH weight formula with Jacobian determinants.
-
-        Implements Algorithm 1, Line 24.
-
-        Weight update formula (with invertible mapping):
-            w^i_k ∝ [p(x^i_k|x^i_{k-1}) * p(z_k|x^i_k) * θ^i] / p(η^i_0|x^i_{k-1}) * w^i_{k-1}
-
-        where θ^i = ∏_j |det(I + ε_j A^i_j(λ))| is the Jacobian determinant product.
-
-        Args:
-            particles_flowed: Particles after flow (x_k)
-            particles_pred: Propagated particles WITH noise (η_0)
-            particles_pred_deterministic: Deterministic propagation (Φ·x_{k-1})
-            measurement: Current measurement
-            theta: Jacobian determinant products for each particle
-            model_params: Dictionary with model parameters
-
-        Returns:
-            weights: Updated normalized weights
-            log_weights: Updated log weights
-        """
-        Q = model_params['Q']
-
-        # Calculate log proposal density
-        # For LEDH, we use the Jacobian determinant in the proposal
-        # log q(x_k|x_{k-1}, z_k) = log p(η_0|x_{k-1}) - log θ^i
-        log_proposal = log_proposal_density(
-            particles_pred, particles_pred_deterministic, Q, 0.0  # No log_jacobian in standard calculation
-        )
-        # Subtract log(theta) to account for the invertible mapping
-        log_proposal = log_proposal - tf.math.log(theta)
-
-        # Calculate log process/prior density
-        log_prior = log_process_density(
-            particles_flowed, particles_pred_deterministic, Q
-        )
-
-        # Calculate log likelihood
-        llh = log_likehood_density(particles_flowed, measurement, model_params)
-
-        # Weight update
-        log_weights_updated = log_prior + llh - log_proposal + self.log_weights
-
-        # Normalize by subtracting max for numerical stability
-        log_weights_updated = log_weights_updated - tf.reduce_max(log_weights_updated)
-
-        # Convert to linear weights
-        _, weights = particle_estimate(log_weights_updated, particles_flowed)
-
-        return weights, log_weights_updated
+    
 
     def run(
         self,
@@ -402,7 +390,7 @@ class PFPF_LEDH(PFPF_EDH):
             print(f"  Time steps: {T}")
 
         # Initialize
-        self.initialize(model_params)
+        self.initialize(model_params) #In PFPF_LEDH algorithm: corresponds to lines 1-2.
 
         # Storage
         estimates_list = []
@@ -414,7 +402,7 @@ class PFPF_LEDH(PFPF_EDH):
         if self.verbose:
             print("\nProcessing time steps...")
 
-        for t in range(T):
+        for t in range(T): #In PFPF_EDH algorithm: corresponds to lines 3
             if self.verbose and (t + 1) % 10 == 0:
                 print(f"  Step {t+1}/{T}")
 
@@ -443,4 +431,4 @@ class PFPF_LEDH(PFPF_EDH):
             print(f"  Covariances shape: {covariances_all.shape}")
             print(f"  Effective sample size: {Neff_all.shape}")
 
-        return estimates, particles_all, covariances_all, Neff_all
+        return estimates, particles_all, covariances_all, Neff_all #In PFPF_EDH algorithm: corresponds to lines 32
