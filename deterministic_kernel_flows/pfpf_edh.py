@@ -38,7 +38,6 @@ class PFPF_EDH(EDHFilter):
     Additional Attributes:
         weights: Particle weights, shape (n_particle,)
         log_weights: Log particle weights, shape (n_particle,)
-        resample_threshold: Effective sample size threshold for resampling
         particles_pred: Propagated particles WITH noise
         particles_pred_deterministic: Propagated particles WITHOUT noise
         particles_mean: Mean of particle distribution
@@ -58,7 +57,6 @@ class PFPF_EDH(EDHFilter):
         use_local: bool = False,
         use_ekf: bool = False,
         ekf_filter: Optional['ExtendedKalmanFilter'] = None,
-        resample_threshold: float = 0.5,
         verbose: bool = True
     ):
         """
@@ -73,7 +71,6 @@ class PFPF_EDH(EDHFilter):
             use_local: Use local linearization (default: False)
             use_ekf: Use EKF for covariance tracking (default: False)
             ekf_filter: Pre-configured EKF filter instance
-            resample_threshold: Resample when N_eff/N < threshold (default: 0.5)
             verbose: Print progress information (default: True)
         """
         super().__init__(
@@ -82,7 +79,6 @@ class PFPF_EDH(EDHFilter):
             use_local, use_ekf, ekf_filter, verbose
         )
 
-        self.resample_threshold = resample_threshold
 
         self.state_transition = state_transition
 
@@ -247,21 +243,18 @@ class PFPF_EDH(EDHFilter):
             N_eff: Effective sample size
         """
         N_eff = self._compute_effective_sample_size(weights)
-        threshold = self.resample_threshold * self.n_particle
 
-        if N_eff < threshold:
-            # Resample
-            indices = multinomial_resample(weights)
-            particles = tf.gather(particles, indices, axis=1)
+        # Resample
+        indices = multinomial_resample(weights)
+        particles = tf.gather(particles, indices, axis=1)
 
-            # Reset to uniform weights
-            weights = tf.ones(self.n_particle, dtype=tf.float32) / self.n_particle
-            log_weights = tf.math.log(weights)
+        # Reset to uniform weights
+        weights = tf.ones(self.n_particle, dtype=tf.float32) / self.n_particle
+        log_weights = tf.math.log(weights)
 
-            if self.verbose:
-                print(f"    Resampled (N_eff={N_eff.numpy():.1f})")
-        else:
-            log_weights = tf.math.log(weights)
+        if self.verbose:
+            print(f"    Resampled (N_eff={N_eff.numpy():.1f})")
+
 
         return particles, weights, log_weights, N_eff, indices
 
@@ -451,7 +444,6 @@ class PFPF_EDH(EDHFilter):
             print(f"  Lambda ratio: {self.lambda_ratio}")
             print(f"  Linearization: {'Local' if self.use_local else 'Global (EDH)'}")
             print(f"  EKF Covariance: {'Enabled' if self.use_ekf else 'Disabled'}")
-            print(f"  Resample threshold: {self.resample_threshold}")
             print(f"  Time steps: {T}")
 
         
