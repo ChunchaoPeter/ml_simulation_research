@@ -48,7 +48,8 @@ class PFPF_LEDH(PFPF_EDH):
         lambda_ratio: float = 1.2,
         use_ekf: bool = False,
         ekf_filter: Optional['ExtendedKalmanFilter'] = None,
-        verbose: bool = True
+        verbose: bool = True,
+        redraw: bool = True
     ):
         """
         Initialize PFPF_LEDH filter.
@@ -56,21 +57,24 @@ class PFPF_LEDH(PFPF_EDH):
         Args:
             observation_jacobian: Callable that computes the observation Jacobian
             observation_model: Callable that maps state → observation
-            observation_model_general: Callable that maps all state → all observation
             state_transition: Callable for state propagation
+            observation_model_general: Callable that maps all state → all observation
             n_particle: Number of particles (default: 100)
             n_lambda: Number of lambda steps (default: 20)
             lambda_ratio: Exponential spacing ratio (default: 1.2)
             use_ekf: Use EKF for covariance tracking (default: False)
             ekf_filter: Pre-configured EKF filter instance
             verbose: Print progress information (default: True)
+            redraw: Redraw particles from Multivariate Normal Distribution (default: True)
         """
         # Initialize parent PFPF_EDH
         super().__init__(
             observation_jacobian, observation_model, observation_model_general, state_transition,
             n_particle, n_lambda, lambda_ratio,
+            use_local=True,  # LEDH uses local linearization
             use_ekf=use_ekf, ekf_filter=ekf_filter,
             verbose=verbose,
+            redraw=redraw
         )
 
         # LEDH-specific state
@@ -318,12 +322,13 @@ class PFPF_LEDH(PFPF_EDH):
 
         # Step 8: Covariance update (Algorithm 1, Line 26-29)
         P_update_list = []
-        for i in range(self.n_particle): 
+        for i in range(self.n_particle):
             particles_i = tf.expand_dims(self.M_prior_all[:,i], 1)
             if self.use_ekf:
-                x_ekf_updated, P_updated = self._ekf_predict(
-                    particles_i, 
-                    self.P_pred_all[i]
+                x_ekf_updated, P_updated = self._ekf_update(
+                    particles_i,
+                    self.P_pred_all[i],
+                    measurement
                 )
                 eigenvalues = tf.linalg.eigvalsh(P_updated)
                 min_eigenvalue = tf.reduce_min(eigenvalues)

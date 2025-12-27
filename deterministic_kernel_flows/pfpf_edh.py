@@ -50,7 +50,8 @@ class PFPF_EDH(EDHFilter):
         use_local: bool = False,
         use_ekf: bool = False,
         ekf_filter: Optional['ExtendedKalmanFilter'] = None,
-        verbose: bool = True
+        verbose: bool = True,
+        redraw: bool = True
     ):
         """
         Initialize PFPF filter.
@@ -59,6 +60,7 @@ class PFPF_EDH(EDHFilter):
             observation_jacobian: Callable that computes the observation Jacobian
             observation_model: Callable that maps state → observation
             observation_model_general: Callable that maps all state → all observation
+            state_transition: Callable that propagates state through motion model
             n_particle: Number of particles (default: 100)
             n_lambda: Number of lambda steps (default: 20)
             lambda_ratio: Exponential spacing ratio (default: 1.2)
@@ -66,29 +68,30 @@ class PFPF_EDH(EDHFilter):
             use_ekf: Use EKF for covariance tracking (default: False)
             ekf_filter: Pre-configured EKF filter instance
             verbose: Print progress information (default: True)
+            redraw: Redraw particles from Multivariate Normal Distribution (default: True)
         """
         super().__init__(
             observation_jacobian, observation_model,
             n_particle, n_lambda, lambda_ratio,
-            use_local, use_ekf, ekf_filter, verbose
+            use_local, use_ekf, ekf_filter, verbose, redraw
         )
 
-
-        self.state_transition = state_transition
-        self.observation_model_general = observation_model_general
+        # Callable functions
+        self.state_transition: Callable = state_transition
+        self.observation_model_general: Callable = observation_model_general
 
         # Additional PFPF state
-        self.weights = None
-        self.log_weights = None
-        # Intermediate computation states 
-        self.particles_pred = None  # Propagated particles WITH noise
-        self.particles_pred_deterministic = None  # Propagated WITHOUT noise, that is used for log prior and proposed
-        self.particles_previous = None # Previous step for particles
-        self.particles_mean = None  # Mean of particles
-        self.mu_0 = None  # Mean trajectory η̄_μ0, this is strong connection with particles_mean
-        self.auxiliary_trajectory = None  # Auxiliary trajectory for linearization. It is used for calculate A, b
-        self.P_pred = None  # Prior covariance P_{k|k-1}, this is also can be called prediction covariance % Kalman variables: preditive varianace
-        self.M = None # the original mean, this one is used to calcuate the mu_0. % Kalman variables: mean
+        self.weights: Optional[tf.Tensor] = None
+        self.log_weights: Optional[tf.Tensor] = None
+        # Intermediate computation states
+        self.particles_pred: Optional[tf.Tensor] = None  # Propagated particles WITH noise
+        self.particles_pred_deterministic: Optional[tf.Tensor] = None  # Propagated WITHOUT noise, that is used for log prior and proposed
+        self.particles_previous: Optional[tf.Tensor] = None  # Previous step for particles
+        self.particles_mean: Optional[tf.Tensor] = None  # Mean of particles
+        self.mu_0: Optional[tf.Tensor] = None  # Mean trajectory η̄_μ0, this is strong connection with particles_mean
+        self.auxiliary_trajectory: Optional[tf.Tensor] = None  # Auxiliary trajectory for linearization. It is used for calculate A, b
+        self.P_pred: Optional[tf.Tensor] = None  # Prior covariance P_{k|k-1}, this is also can be called prediction covariance % Kalman variables: preditive varianace
+        self.M: Optional[tf.Tensor] = None  # the original mean, this one is used to calcuate the mu_0. % Kalman variables: mean
 
         ## There are many parameters that can be used interchangeably.
         ## I have not reduced the duplicated variables, as keeping them
@@ -154,7 +157,7 @@ class PFPF_EDH(EDHFilter):
         particles_pred: tf.Tensor,
         particles_pred_deterministic: tf.Tensor,
         measurement: tf.Tensor,
-        log_jacobian_det_sum: float,
+        log_jacobian_det_sum: tf.Tensor,
         model_params: Dict
     ) -> Tuple[tf.Tensor, tf.Tensor]:
         """
@@ -191,7 +194,7 @@ class PFPF_EDH(EDHFilter):
         )
 
         # Calculate log likelihood using prove_function.py
-        llh = self._log_likehood_density(particles_flowed, measurement, model_params)
+        llh = self._log_likelihood_density(particles_flowed, measurement, model_params)
 
         # Weight update
         log_weights_updated = log_prior + llh - log_proposal + self.log_weights
@@ -222,7 +225,7 @@ class PFPF_EDH(EDHFilter):
         self,
         particles: tf.Tensor,
         weights: tf.Tensor
-    ) -> Tuple[tf.Tensor, tf.Tensor, tf.Tensor, float]:
+    ) -> Tuple[tf.Tensor, tf.Tensor, tf.Tensor, float, tf.Tensor]:
         """
         Resample particles based on effective sample size.
 
@@ -235,6 +238,7 @@ class PFPF_EDH(EDHFilter):
             weights: Updated weights (uniform if resampled)
             log_weights: Updated log weights
             N_eff: Effective sample size
+            indices: Resampling indices
         """
         N_eff = self._compute_effective_sample_size(weights)
 
@@ -253,7 +257,7 @@ class PFPF_EDH(EDHFilter):
         return particles, weights, log_weights, N_eff, indices
 
 
-    def _particle_flow_edh(self, model_params, measurement):
+    def _particle_flow_edh(self, model_params: Dict, measurement: tf.Tensor) -> None:
         """
         Migrate particles from prior to posterior using EDH flow (global linearization).
 
@@ -314,15 +318,15 @@ class PFPF_EDH(EDHFilter):
             self.particles_mean = particles_mean
 
 
-    def _particle_estimate(self, log_weights, particles):
+    def _particle_estimate(self, log_weights: tf.Tensor, particles: tf.Tensor) -> Tuple[tf.Tensor, tf.Tensor]:
         """
         Form estimate based on weighted set of particles
-        
+
         Args:
             log_weights: logarithmic weights [N x 1] or [N,] tensor
-            particles: the state values of the particles [dim x N] 
+            particles: the state values of the particles [dim x N]
                     (state dimension x number of particles)
-        
+
         Returns:
             estimate: weighted estimate of the state [dim x 1] or [dim,] tensor
             ml_weights: normalized weights [N x 1] or [N,] tensor
@@ -357,7 +361,13 @@ class PFPF_EDH(EDHFilter):
 
     #################################### calcuate log density proposal ####################################
 
-    def _log_proposal_density(self, xp_prop, xp_prop_deterministic, Q, log_jacobian_det_sum):
+    def _log_proposal_density(
+        self,
+        xp_prop: tf.Tensor,
+        xp_prop_deterministic: tf.Tensor,
+        Q: tf.Tensor,
+        log_jacobian_det_sum: tf.Tensor
+    ) -> tf.Tensor:
         """
         Calculate the log proposal density after particle flow.
         
@@ -405,7 +415,7 @@ class PFPF_EDH(EDHFilter):
         return log_proposal
 
 
-    def _log_process_density(self, xp, xp_prop_deterministic, Q):
+    def _log_process_density(self, xp: tf.Tensor, xp_prop_deterministic: tf.Tensor, Q: tf.Tensor) -> tf.Tensor:
         """
         Calculate the log process density p(x_k|x_{k-1}).
 
@@ -436,20 +446,20 @@ class PFPF_EDH(EDHFilter):
         
         return log_prior
 
-    def _log_likehood_density(self, particles_flowed, measurement, model_params):
+    def _log_likelihood_density(self, particles_flowed: tf.Tensor, measurement: tf.Tensor, model_params: Dict) -> tf.Tensor:
         """
         Compute likelihood p(z_k|x_k) for Gaussian measurement model.
         observation_model_general: it is called function that we can calculate z_pre for all partical
         Equation:
         p(z_k|x_k) = N(z_k; h(x_k), R)
-        
+
         Args:
-            x: State, shape (state_dim, 1)
+            particles_flowed: State particles after flow, shape (state_dim, n_particle)
             measurement: Measurement z_k, shape (n_sensor, 1)
             model_params: Dictionary with observation model and R
-        
+
         Returns:
-            likelihood: Scalar likelihood value
+            log_likelihood: Log likelihood for each particle, shape (n_particle,)
         """
         R = model_params['R']
         z_pre = self.observation_model_general(particles_flowed, model_params, no_noise=True)
@@ -466,7 +476,7 @@ class PFPF_EDH(EDHFilter):
         log_likelihood = dist.log_prob(residual_t)  # (n_particle,) 
         return log_likelihood
 
-    def _multinomial_resample(self, weights):
+    def _multinomial_resample(self, weights: tf.Tensor) -> tf.Tensor:
         """
         Multinomial resampling.
 
@@ -501,7 +511,7 @@ class PFPF_EDH(EDHFilter):
         self,
         measurement: tf.Tensor,
         model_params: Dict
-    ) -> Tuple[tf.Tensor, tf.Tensor, tf.Tensor]:
+    ) -> Tuple[tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor]:
         """
         Perform one PFPF filter step.
 
@@ -516,6 +526,7 @@ class PFPF_EDH(EDHFilter):
             particles_updated: Updated particles
             mean_estimate: Weighted state estimate
             P_updated: Posterior covariance
+            N_eff: Effective sample size
         """
         # Ensure measurement is (n_sensor, 1)
         if len(measurement.shape) == 1:
@@ -611,7 +622,7 @@ class PFPF_EDH(EDHFilter):
         self,
         measurements: tf.Tensor,
         model_params: Dict
-    ) -> Tuple[tf.Tensor, tf.Tensor, tf.Tensor]:
+    ) -> Tuple[tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor]:
         """
         Run PFPF filter on measurement sequence.
 
@@ -625,6 +636,7 @@ class PFPF_EDH(EDHFilter):
             estimates: State estimates, shape (state_dim, T)
             particles_all: All particles, shape (state_dim, n_particle, T)
             covariances_all: All covariances, shape (state_dim, state_dim, T)
+            Neff_all: Effective sample sizes, shape (T, 1)
         """
         T = tf.shape(measurements)[1].numpy()
 
