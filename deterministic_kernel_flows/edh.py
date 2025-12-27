@@ -63,15 +63,18 @@ class EDHFilter:
         Raises:
             ValueError: If use_ekf=True but ekf_filter is None
         """
-        self.compute_observation_jacobian = observation_jacobian
-        self.observation_model = observation_model
-        self.n_particle = n_particle
-        self.n_lambda = n_lambda
-        self.lambda_ratio = lambda_ratio
-        self.use_local = use_local
-        self.use_ekf = use_ekf
-        self.verbose = verbose
-        self.redraw = redraw
+        # Callable functions
+        self.compute_observation_jacobian: Callable = observation_jacobian
+        self.observation_model: Callable = observation_model
+
+        # Configuration parameters
+        self.n_particle: int = n_particle
+        self.n_lambda: int = n_lambda
+        self.lambda_ratio: float = lambda_ratio
+        self.use_local: bool = use_local
+        self.use_ekf: bool = use_ekf
+        self.verbose: bool = verbose
+        self.redraw: bool = redraw
 
         # Validate EKF configuration
         if use_ekf and ekf_filter is None:
@@ -80,17 +83,19 @@ class EDHFilter:
                 "Use create_ekf_for_acoustic_model() to create an EKF filter."
             )
 
-        self.ekf_filter = ekf_filter  # Store user-provided filter
+        self.ekf_filter: Optional[object] = ekf_filter  # Store user-provided filter
 
         # Pre-compute lambda steps
+        self.lambda_steps: tf.Tensor
+        self.lambda_values: tf.Tensor
         self.lambda_steps, self.lambda_values = self._compute_lambda_steps()
 
         # Storage for filter state
-        self.particles = None
-        self.P = None  # Covariance matrix
-        self.m0 = None  # Initial random mean
-        self.ekf = None  # EKF instance (initialized when use_ekf=True)
-        self.x_ekf = None  # EKF state estimate (used only when use_ekf=True)
+        self.particles: Optional[tf.Tensor] = None
+        self.P: Optional[tf.Tensor] = None  # Covariance matrix
+        self.m0: Optional[tf.Tensor] = None  # Initial random mean
+        self.ekf: Optional[object] = None  # EKF instance (initialized when use_ekf=True)
+        self.x_ekf: Optional[tf.Tensor] = None  # EKF state estimate (used only when use_ekf=True)
 
     def _compute_lambda_steps(self) -> Tuple[tf.Tensor, tf.Tensor]:
         """
@@ -122,7 +127,7 @@ class EDHFilter:
 
         return lambda_steps, lambda_values
 
-    def initialize(self, model_params: Dict) -> Tuple[tf.Tensor, tf.Tensor, tf.Tensor]:
+    def initialize(self, model_params: Dict) -> Tuple[tf.Tensor, tf.Tensor]:
         """
         Initialize particles from Gaussian prior.
 
@@ -432,7 +437,6 @@ class EDHFilter:
             measurement: Current measurement z
             lam: Current lambda value
             model_params: Dictionary with observation model
-            use_local: If True, linearize at x; if False, at x_bar
 
         Returns:
             A: Flow matrix, shape (state_dim, state_dim)
@@ -453,10 +457,12 @@ class EDHFilter:
             linearization_point, eta_bar_mu_0, P, measurement, lam_tensor, R, H, h_x_bar, state_dim
         )
     
-    def _redraw_particles(self,
-                         mu: tf.Tensor,
-                         Sigma:tf.Tensor, 
-                         n_particles: tf.Tensor):
+    def _redraw_particles(
+        self,
+        mu: tf.Tensor,
+        Sigma: tf.Tensor,
+        n_particles: int
+    ) -> tf.Tensor:
         """
         Redraws particles from a Multivariate Normal Distribution.
         
@@ -529,13 +535,19 @@ class EDHFilter:
         return xp
 
 
-    def _cov_regularize(self, cova):
+    def _cov_regularize(self, cova: tf.Tensor) -> tf.Tensor:
         """
         Regularize a covariance matrix to ensure positive definiteness.
 
         Adds a small scaled identity matrix iteratively until the Cholesky
         factorization succeeds. Raises an error if the maximum number of
         iterations is reached.
+
+        Args:
+            cova: Covariance matrix to regularize
+
+        Returns:
+            cova: Regularized covariance matrix
         """
         dim = cova.shape[0]
         reg = tf.eye(dim, dtype=cova.dtype) * 1e-14
