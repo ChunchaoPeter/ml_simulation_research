@@ -10,6 +10,7 @@ particle filter," in Proc. IEEE Statistical Signal Processing Workshop
 
 import tensorflow as tf
 from typing import Tuple, Dict, Callable, Optional
+import warnings
 
 class EDHFilter:
     """
@@ -371,17 +372,7 @@ class EDHFilter:
         HPHt = tf.matmul(tf.matmul(H, P), tf.transpose(H))
 
         # Innovation covariance: S = λ*H*P*H^T + R
-        # Add regularization for numerical stability
-        n_sensor = tf.shape(R)[0]
-
-        # regularization = 1e-6 * tf.eye(n_sensor, dtype=tf.float32)
-        # S = lam * HPHt + R + regularization
-
         S = lam * HPHt + R
-        S = 0.5 * (S + tf.transpose(S))  # enforce symmetry
-        avg_diag = tf.reduce_mean(tf.linalg.diag_part(S))
-        jitter = tf.maximum(1e-9, 1e-6 * avg_diag)
-        S = S + jitter * tf.eye(n_sensor, dtype=S.dtype)
 
         # Use Cholesky decomposition instead of direct inversion (more stable)
         S_chol = tf.linalg.cholesky(S)
@@ -398,13 +389,7 @@ class EDHFilter:
         innovation = tf.squeeze(measurement, axis=1) - e
 
         # Compute R^{-1}*(z - e) using Cholesky decomposition
-        # R_regularized = R + regularization
-        R_sym = 0.5 * (R + tf.transpose(R))
-        avg_diag_R = tf.reduce_mean(tf.linalg.diag_part(R_sym))
-        jitter_R = tf.maximum(1e-9, 1e-6 * avg_diag_R)
-        R_regularized = R_sym + jitter_R * tf.eye(n_sensor, dtype=R.dtype)
-
-        R_chol = tf.linalg.cholesky(R_regularized)
+        R_chol = tf.linalg.cholesky(R)
         R_inv_innov = tf.linalg.cholesky_solve(R_chol, tf.expand_dims(innovation, 1))
         R_inv_innov = tf.squeeze(R_inv_innov, axis=1)
 
@@ -465,6 +450,38 @@ class EDHFilter:
             linearization_point, eta_bar_mu_0, P, measurement, lam_tensor, R, H, h_x_bar, state_dim
         )
     
+    def _cov_regularize(self, cova):
+        """
+        Regularize a covariance matrix to ensure positive definiteness.
+
+        Adds a small scaled identity matrix iteratively until the Cholesky
+        factorization succeeds. Raises an error if the maximum number of
+        iterations is reached.
+        """
+        dim = cova.shape[0]
+        reg = tf.eye(dim, dtype=cova.dtype) * 1e-14
+        
+        count = 0
+        max_count = 100
+        indicator = 1
+        
+        while indicator > 0 and count < max_count:
+            # Check if all eigenvalues are positive
+            eigenvalues = tf.linalg.eigvalsh(cova)
+            min_eigenvalue = tf.reduce_min(eigenvalues)
+            
+            if min_eigenvalue > 0:
+                indicator = 0
+            else:
+                cova = cova + reg
+                count += 1
+        
+        if count == max_count:
+            warnings.warn('cov_regularize:TooManyIterations - '
+                        'Could not regularize the covariance matrix')
+        
+        return cova
+
     @tf.function
     def _particle_flow(
         self,
@@ -583,6 +600,10 @@ class EDHFilter:
         # Line 6: Covariance prediction
         if self.use_ekf:
             x_ekf_pred, P_pred = self._ekf_predict(self.x_ekf, self.P)
+            eigenvalues = tf.linalg.eigvalsh(P_pred)
+            min_eigenvalue = tf.reduce_min(eigenvalues)
+            if min_eigenvalue <= 0:
+                P_pred = self._cov_regularize(P_pred)
         else:
             P_pred = self._estimate_covariance(particles_pred, model_params)
 
@@ -598,6 +619,12 @@ class EDHFilter:
         if self.use_ekf:
             x_ekf_updated, P_updated = self._ekf_update(x_ekf_pred, P_pred, measurement)
             self.x_ekf = x_ekf_updated
+
+            eigenvalues = tf.linalg.eigvalsh(P_updated)
+            min_eigenvalue = tf.reduce_min(eigenvalues)
+            if min_eigenvalue <= 0:
+                P_updated = self._cov_regularize(P_updated)
+
         else:
             P_updated = self._estimate_covariance(particles_flowed, model_params)
 

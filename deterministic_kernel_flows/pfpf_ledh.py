@@ -19,9 +19,7 @@ from pfpf_edh import PFPF_EDH
 # Import utility functions from prove_function.py
 from prove_function import (
     particle_estimate,
-    log_proposal_density,
-    log_process_density,
-    log_likehood_density
+    cov_regularize
 )
 
 tfd = tfp.distributions
@@ -260,13 +258,6 @@ class PFPF_LEDH(PFPF_EDH):
         self.mu_0 = self.state_transition(x_est_prev, model_params, no_noise=True)
         
         # Step 2: Estimate prior covariance (Algorithm 1, Line 4 - 5)
-
-        # for i in range(self.n_particle):
-        #     if self.use_ekf:
-        #         x_ekf_pred, self.P_pred_all = self._ekf_predict(self.particles, self.P)
-        #     else:
-        #         return 'Need to use ekf'
-
         P_pred_list = []
         M_prior_list = []
         for i in range(self.n_particle):
@@ -277,6 +268,12 @@ class PFPF_LEDH(PFPF_EDH):
                     particles_i, 
                     self.P_all[i]
                 )
+
+                eigenvalues = tf.linalg.eigvalsh(P_pred)
+                min_eigenvalue = tf.reduce_min(eigenvalues)
+                if min_eigenvalue <= 0:
+                    P_pred = cov_regularize(P_pred)
+
                 P_pred_list.append(P_pred)
                 M_prior_list.append(x_ekf_pred)
             else:
@@ -334,6 +331,11 @@ class PFPF_LEDH(PFPF_EDH):
                     particles_i, 
                     self.P_pred_all[i]
                 )
+                eigenvalues = tf.linalg.eigvalsh(P_updated)
+                min_eigenvalue = tf.reduce_min(eigenvalues)
+                if min_eigenvalue <= 0:
+                    P_updated = cov_regularize(P_updated)
+
                 P_update_list.append(P_updated)
             else:
                 raise RuntimeError("EKF must be enabled")

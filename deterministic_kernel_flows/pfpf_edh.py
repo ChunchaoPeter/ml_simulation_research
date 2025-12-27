@@ -355,7 +355,14 @@ class PFPF_EDH(EDHFilter):
 
         # Step 2: Estimate prior covariance
         if self.use_ekf:
-            x_ekf_pred, self.P_pred = self._ekf_predict(self.x_ekf, self.P) #In PFPF_EDH algorithm: corresponds to lines 4
+            x_ekf_pred, P_pred = self._ekf_predict(self.x_ekf, self.P) #In PFPF_EDH algorithm: corresponds to lines 4
+
+            eigenvalues = tf.linalg.eigvalsh(P_pred)
+            min_eigenvalue = tf.reduce_min(eigenvalues)
+            if min_eigenvalue <= 0:
+                P_pred = self._cov_regularize(P_pred)
+            self.P_pred = P_pred
+
         else:
             self.P_pred = self._estimate_covariance(self.particles_pred, model_params)
 
@@ -398,6 +405,12 @@ class PFPF_EDH(EDHFilter):
         if self.use_ekf:
             x_ekf_updated, P_updated = self._ekf_update(x_ekf_pred, self.P_pred, measurement)
             self.x_ekf = x_ekf_updated
+
+            eigenvalues = tf.linalg.eigvalsh(P_updated)
+            min_eigenvalue = tf.reduce_min(eigenvalues)
+            if min_eigenvalue <= 0:
+                P_updated = self._cov_regularize(P_updated)
+
         else:
             P_updated = self._estimate_covariance(self.particles, model_params)
 
