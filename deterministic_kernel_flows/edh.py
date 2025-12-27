@@ -41,7 +41,8 @@ class EDHFilter:
         use_local: bool = False,
         use_ekf: bool = False,
         ekf_filter: Optional['ExtendedKalmanFilter'] = None,
-        verbose: bool = True
+        verbose: bool = True,
+        redraw: bool = True
     ):
         """
         Initialize EDH filter.
@@ -57,6 +58,7 @@ class EDHFilter:
             ekf_filter: Pre-configured EKF filter instance
                        Required if use_ekf=True
             verbose: Print progress information (default: True)
+            redraw: Redraws particles from a Multivariate Normal Distribution.
 
         Raises:
             ValueError: If use_ekf=True but ekf_filter is None
@@ -69,6 +71,7 @@ class EDHFilter:
         self.use_local = use_local
         self.use_ekf = use_ekf
         self.verbose = verbose
+        self.redraw = redraw
 
         # Validate EKF configuration
         if use_ekf and ekf_filter is None:
@@ -450,6 +453,82 @@ class EDHFilter:
             linearization_point, eta_bar_mu_0, P, measurement, lam_tensor, R, H, h_x_bar, state_dim
         )
     
+    def _redraw_particles(self,
+                         mu: tf.Tensor,
+                         Sigma:tf.Tensor, 
+                         n_particles: tf.Tensor):
+        """
+        Redraws particles from a Multivariate Normal Distribution.
+        
+        This function implements Step 20 from the particle filter algorithm:
+            Optional: redraw particles x^i_k ~ N(x̂_k, P_{k|k})
+        
+        Mathematical Formula:
+        ---------------------
+        Given:
+            - μ = x̂_k: posterior mean estimate, shape [dim_state, 1]
+            - Σ = P_{k|k}: posterior covariance matrix, shape [dim_state, dim_state]
+        
+        We want to sample: x^i_k ~ N(x̂_k, P_{k|k}) for i = 1, ..., n_particles
+        
+        This is the particle regularization/rejuvenation step that redraws all particles
+        from the Gaussian approximation to prevent particle degeneracy.
+        
+        Algorithm:
+        ----------
+        1. Sample standard normal noise: z^i ~ N(0, I), where I is identity matrix
+        2. Compute Cholesky decomposition: Σ = P_{k|k} = L L^T, where L is lower triangular
+        3. Transform: x^i_k = L z^i + x̂_k
+        
+        This gives us: x^i_k ~ N(x̂_k, P_{k|k}) because:
+            E[x^i_k] = E[L z^i + x̂_k] = L E[z^i] + x̂_k = x̂_k
+            Cov[x^i_k] = Cov[L z^i] = L Cov[z^i] L^T = L I L^T = L L^T = P_{k|k}
+        
+        Returns:
+            xp (tf.Tensor): Sampled particles x^i_k ~ N(x̂_k, P_{k|k}), 
+                            shape [dim_state, n_particles]
+        
+        Example:
+            >>> x_hat_k = tf.constant([[10.0], [5.0]])  # Mean estimate x̂_k
+            >>> P_k_given_k = tf.constant([[1.0, 0.5],  # Covariance P_{k|k}
+            ...                            [0.5, 1.0]])
+            >>> particles = redraw_particles(x_hat_k, P_k_given_k, n_particles=1000)
+            >>> particles.shape
+            TensorShape([2, 1000])
+        """
+        # 1. Get the dimensionality of the state
+        if len(mu.shape) == 1:
+            mu = tf.expand_dims(mu, 1)
+
+        dim_state = mu.shape[0]
+        
+        # 2. Generate standard normal noise z ~ N(0, I)
+        # Shape will be [dim_state, n_particles]
+        # Mathematical: z^i ~ N(0, I) for i = 1, ..., n_particles
+        z = tf.random.normal(shape=[dim_state, n_particles], dtype=mu.dtype)
+        
+        # 3. Compute the Matrix Square Root (A = L)
+        # Mathematical: P_{k|k} = L L^T (Cholesky decomposition)
+        # Use Cholesky decomposition for better numerical stability
+        # For positive semi-definite matrices, cholesky is preferred over sqrtm
+        try:
+            A = tf.linalg.cholesky(Sigma)  # A = L, where P_{k|k} = L L^T
+        except:
+            # Fallback to sqrtm if Cholesky fails (shouldn't happen for valid covariance)
+            # sqrtm computes: P_{k|k} = A A (not necessarily A A^T)
+            A = tf.linalg.sqrtm(Sigma)
+            # Cast to real if sqrtm returns complex (can happen with numerical errors)
+            if A.dtype.is_complex:
+                A = tf.cast(tf.math.real(A), mu.dtype)
+        
+        # 4. Transform the noise and add the mean
+        # Mathematical: x^i_k = L z^i + x̂_k, which gives x^i_k ~ N(x̂_k, P_{k|k})
+        # Broadcasting handles adding mu (x̂_k) to every column of A*z (L*z^i)
+        xp = tf.linalg.matmul(A, z) + mu  # [dim_state, n_particles]
+        
+        return xp
+
+
     def _cov_regularize(self, cova):
         """
         Regularize a covariance matrix to ensure positive definiteness.
@@ -628,6 +707,9 @@ class EDHFilter:
         else:
             P_updated = self._estimate_covariance(particles_flowed, model_params)
 
+        if self.redraw:
+            particles_flowed = self._redraw_particles(mean_estimate, P_updated, self.n_particle)
+        
         # Update internal state
         self.particles = particles_flowed
         self.P = P_updated
@@ -640,7 +722,7 @@ class EDHFilter:
         model_params: Dict
     ) -> Tuple[tf.Tensor, tf.Tensor, tf.Tensor]:
         """
-        Run EDH filter on measurement sequence.
+        Run EDH or LEDH filter on measurement sequence.
 
         Algorithm Main Loop:
             1-2  Initialize particles and covariance
@@ -659,8 +741,12 @@ class EDHFilter:
         """
         T = tf.shape(measurements)[1].numpy()
 
-        if self.verbose:
+        if self.use_local:
+            print(f"\nRunning LEDH Filter:")
+        else:
             print(f"\nRunning EDH Filter:")
+
+        if self.verbose:
             print(f"  Particles: {self.n_particle}")
             print(f"  Lambda steps: {self.n_lambda}")
             print(f"  Lambda ratio: {self.lambda_ratio}")
@@ -698,9 +784,13 @@ class EDHFilter:
         estimates = tf.concat(estimates_list, axis=1)
         particles_all = tf.concat(particles_list, axis=2)
         covariances_all = tf.concat(covariances_list, axis=2)
-
-        if self.verbose:
+        
+        if self.use_local:
+            print("\nLEDH filter completed successfully!")
+        else:
             print("\nEDH filter completed successfully!")
+        
+        if self.verbose:
             print(f"  Estimates shape: {estimates.shape}")
             print(f"  Particles shape: {particles_all.shape}")
             print(f"  Covariances shape: {covariances_all.shape}")
