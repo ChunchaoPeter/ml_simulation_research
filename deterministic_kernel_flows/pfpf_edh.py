@@ -16,14 +16,6 @@ import tensorflow_probability as tfp
 from typing import Tuple, Dict, Callable, Optional
 from edh import EDHFilter
 
-# Import utility functions from prove_function.py
-from prove_function import (
-    particle_estimate,
-    log_proposal_density,
-    log_process_density,
-    log_likehood_density,
-    multinomial_resample
-)
 
 tfd = tfp.distributions
 
@@ -50,6 +42,7 @@ class PFPF_EDH(EDHFilter):
         self,
         observation_jacobian: Callable,
         observation_model: Callable,
+        observation_model_general: Callable,
         state_transition: Callable,
         n_particle: int = 100,
         n_lambda: int = 20,
@@ -65,6 +58,7 @@ class PFPF_EDH(EDHFilter):
         Args:
             observation_jacobian: Callable that computes the observation Jacobian
             observation_model: Callable that maps state → observation
+            observation_model_general: Callable that maps all state → all observation
             n_particle: Number of particles (default: 100)
             n_lambda: Number of lambda steps (default: 20)
             lambda_ratio: Exponential spacing ratio (default: 1.2)
@@ -81,11 +75,11 @@ class PFPF_EDH(EDHFilter):
 
 
         self.state_transition = state_transition
+        self.observation_model_general = observation_model_general
 
         # Additional PFPF state
         self.weights = None
         self.log_weights = None
-
         # Intermediate computation states 
         self.particles_pred = None  # Propagated particles WITH noise
         self.particles_pred_deterministic = None  # Propagated WITHOUT noise, that is used for log prior and proposed
@@ -187,17 +181,17 @@ class PFPF_EDH(EDHFilter):
         Q = model_params['Q']
 
         # Calculate log proposal density using prove_function.py
-        log_proposal = log_proposal_density(
+        log_proposal = self._log_proposal_density(
             particles_pred, particles_pred_deterministic, Q, log_jacobian_det_sum
         )
 
         # Calculate log process/prior density using prove_function.py
-        log_prior = log_process_density(
+        log_prior = self._log_process_density(
             particles_flowed, particles_pred_deterministic, Q
         )
 
         # Calculate log likelihood using prove_function.py
-        llh = log_likehood_density(particles_flowed, measurement, model_params)
+        llh = self._log_likehood_density(particles_flowed, measurement, model_params)
 
         # Weight update
         log_weights_updated = log_prior + llh - log_proposal + self.log_weights
@@ -207,7 +201,7 @@ class PFPF_EDH(EDHFilter):
 
         # Convert to linear weights using particle_estimate
         # This normalizes the weights properly
-        _, weights = particle_estimate(log_weights_updated, particles_flowed)
+        _, weights = self._particle_estimate(log_weights_updated, particles_flowed)
 
         return weights, log_weights_updated
 
@@ -245,7 +239,7 @@ class PFPF_EDH(EDHFilter):
         N_eff = self._compute_effective_sample_size(weights)
 
         # Resample
-        indices = multinomial_resample(weights)
+        indices = self._multinomial_resample(weights)
         particles = tf.gather(particles, indices, axis=1)
 
         # Reset to uniform weights
@@ -316,8 +310,192 @@ class PFPF_EDH(EDHFilter):
             slopes = tf.matmul(A, self.particles) + tf.expand_dims(b, 1)
             self.particles = self.particles + epsilon_j * slopes
 
-            particles_mean, _ = particle_estimate(log_weights, self.particles)
+            particles_mean, _ = self._particle_estimate(log_weights, self.particles)
             self.particles_mean = particles_mean
+
+
+    def _particle_estimate(self, log_weights, particles):
+        """
+        Form estimate based on weighted set of particles
+        
+        Args:
+            log_weights: logarithmic weights [N x 1] or [N,] tensor
+            particles: the state values of the particles [dim x N] 
+                    (state dimension x number of particles)
+        
+        Returns:
+            estimate: weighted estimate of the state [dim x 1] or [dim,] tensor
+            ml_weights: normalized weights [N x 1] or [N,] tensor
+        """
+        
+        # Ensure log_weights is a 1D tensor
+        log_weights = tf.reshape(log_weights, [-1])
+        
+        # Normalize log_weights by subtracting the maximum (for numerical stability)
+        log_weights = log_weights - tf.reduce_max(log_weights)
+        
+        # Compute weights
+        ml_weights = tf.exp(log_weights)
+        
+        # Normalize weights to sum to 1
+        ml_weights = ml_weights / tf.reduce_sum(ml_weights)
+        
+        # Reshape ml_weights for matrix multiplication [N,] -> [N, 1]
+        ml_weights_col = tf.reshape(ml_weights, [-1, 1])
+        
+        # Compute weighted estimate: particles @ ml_weights
+        # particles shape: [dim, N], ml_weights_col shape: [N, 1]
+        # result shape: [dim, 1]
+        estimate = tf.matmul(particles, ml_weights_col)
+        
+        # Squeeze to remove the last dimension
+        estimate = tf.squeeze(estimate, axis=-1)
+        
+        return estimate, ml_weights
+
+
+
+    #################################### calcuate log density proposal ####################################
+
+    def _log_proposal_density(self, xp_prop, xp_prop_deterministic, Q, log_jacobian_det_sum):
+        """
+        Calculate the log proposal density after particle flow.
+        
+        MATLAB Reference: log_proposal_density.m lines 23, 26
+        
+        This function exactly mirrors the MATLAB implementation:
+        -------------------------------------------------------
+        MATLAB code:
+            log_proposal = loggausspdf(vg.xp_prop, vg.xp_prop_deterministic, ps.propparams.Q);
+            log_proposal = log_proposal - log_jacobian_det_sum;
+        -------------------------------------------------------
+        
+        The proposal density with change of variables:
+            q(x_k|x_{k-1}, z_k) = p(η_0|x_{k-1}) / |det(∂T/∂η_0)|
+        
+        In log space:
+            log q = log p(η_0|x_{k-1}) - log|det(∂T/∂η_0)|
+        
+        Args:
+            xp_prop: Propagated particles WITH noise η_0, shape (state_dim, n_particle)
+            xp_prop_deterministic: Deterministic propagation Φ·x_{k-1}, shape (state_dim, n_particle)
+            Q: Process noise covariance, shape (state_dim, state_dim)
+            log_jacobian_det_sum: Sum of log Jacobian determinants, shape (n_particle,)
+        
+        Returns:
+            log_proposal: Log proposal density for each particle, shape (n_particle,)
+        """
+        # Line 23: Calculate base proposal density
+        
+        mean = tf.transpose(xp_prop_deterministic)   # (n_particle, state_dim)
+        xp   = tf.transpose(xp_prop)     # (n_particle, state_dim)
+        Q = Q  
+
+        scale_tril = tf.linalg.cholesky(Q)
+        dist = tfd.MultivariateNormalTriL(
+            loc=mean,
+            scale_tril=scale_tril
+        )
+        log_proposal = dist.log_prob(xp)  # (n_particle,) 
+        
+        # Line 26: Subtract Jacobian determinant
+        log_proposal = log_proposal - log_jacobian_det_sum
+
+
+        return log_proposal
+
+
+    def _log_process_density(self, xp, xp_prop_deterministic, Q):
+        """
+        Calculate the log process density p(x_k|x_{k-1}).
+
+        
+        For the acoustic example:
+            p(x_k|x_{k-1}) = N(x_k; Φ·x_{k-1}, Q)
+        
+        Args:
+            xp: Current particles (after flow), shape (state_dim, n_particle)
+            xp_prop_deterministic: Deterministic propagation Φ·x_{k-1}, shape (state_dim, n_particle)
+            Q: Process noise covariance, shape (state_dim, state_dim)
+        
+        Returns:
+            log_prior: Log process density for each particle, shape (n_particle,)
+        """
+        
+        mean = tf.transpose(xp_prop_deterministic)   # (n_particle, state_dim)
+        xp   = tf.transpose(xp)     # (n_particle, state_dim)
+        Q = Q 
+
+        scale_tril = tf.linalg.cholesky(Q)
+
+        dist = tfd.MultivariateNormalTriL(
+            loc=mean,                 # shape (n_particle, di)
+            scale_tril=scale_tril       # shape (state_dim, state_dim), broadcasted
+        )
+        log_prior = dist.log_prob(xp)  # (n_particle,) 
+        
+        return log_prior
+
+    def _log_likehood_density(self, particles_flowed, measurement, model_params):
+        """
+        Compute likelihood p(z_k|x_k) for Gaussian measurement model.
+        observation_model_general: it is called function that we can calculate z_pre for all partical
+        Equation:
+        p(z_k|x_k) = N(z_k; h(x_k), R)
+        
+        Args:
+            x: State, shape (state_dim, 1)
+            measurement: Measurement z_k, shape (n_sensor, 1)
+            model_params: Dictionary with observation model and R
+        
+        Returns:
+            likelihood: Scalar likelihood value
+        """
+        R = model_params['R']
+        z_pre = self.observation_model_general(particles_flowed, model_params, no_noise=True)
+        residual = measurement - z_pre
+        residual_t = tf.transpose(residual)     # (n_particle, state_dim)
+        mean_zeros = tf.zeros(residual_t.shape, dtype=tf.float32)   # (n_particle, state_dim)
+
+        scale_tril = tf.linalg.cholesky(R)
+
+        dist = tfd.MultivariateNormalTriL(
+            loc=mean_zeros,                 # shape (n_particle, di)
+            scale_tril=scale_tril       # shape (state_dim, state_dim), broadcasted
+        )
+        log_likelihood = dist.log_prob(residual_t)  # (n_particle,) 
+        return log_likelihood
+
+    def _multinomial_resample(self, weights):
+        """
+        Multinomial resampling.
+
+        Draws ancestry vector A^{1:N} where A^i ~ Cat(w^1,...,w^N)
+
+        Args:
+            weights: Normalized particle weights (N,)
+
+        Returns:
+            indices: Resampled particle indices (N,)
+        """
+        # Sample from categorical distribution
+        # This implements: A^i ~ Cat(w^1,...,w^N)
+        # Use log probabilities for numerical stability
+        logits = tf.math.log(weights + 1e-10)
+
+        # tf.random.categorical expects shape [batch_size, num_classes]
+        # and returns [batch_size, num_samples]
+        # We want to sample num_particles times from one distribution
+        logits_2d = tf.reshape(logits, [1, -1])
+        indices = tf.random.categorical(logits_2d, weights.shape[0], dtype=tf.int32)
+
+        # Reshape from [1, num_particles] to [num_particles]
+        indices = tf.reshape(indices, [-1])
+
+        # This method is much faster than using tfd.Categorical(probs=weights) 
+        return indices
+
+
 
     def step(
         self,
@@ -375,7 +553,7 @@ class PFPF_EDH(EDHFilter):
 
         # Step 4: Update auxiliary trajectory for linearization 
         # For EDH, this is the same as mu_0 (global linearization point)
-        mean_estimate, _ = particle_estimate(self.log_weights, self.particles)
+        mean_estimate, _ = self._particle_estimate(self.log_weights, self.particles)
         self.auxiliary_trajectory = mean_estimate
         self.particles_mean = mean_estimate
 
@@ -397,7 +575,7 @@ class PFPF_EDH(EDHFilter):
 
         # Step 7: Weighted estimate using particle_estimate from prove_function.py
         # In PFPF_EDH algorithm: corresponds to lines 27
-        mean_estimate, _ = particle_estimate(log_weights, self.particles)
+        mean_estimate, _ = self._particle_estimate(log_weights, self.particles)
         self.particles_mean = mean_estimate
 
         # Step 8: Covariance update

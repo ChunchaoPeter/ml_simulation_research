@@ -16,11 +16,6 @@ import tensorflow_probability as tfp
 from typing import Tuple, Dict, Callable, Optional
 from pfpf_edh import PFPF_EDH
 
-# Import utility functions from prove_function.py
-from prove_function import (
-    particle_estimate,
-    cov_regularize
-)
 
 tfd = tfp.distributions
 
@@ -47,6 +42,7 @@ class PFPF_LEDH(PFPF_EDH):
         observation_jacobian: Callable,
         observation_model: Callable,
         state_transition: Callable,
+        observation_model_general: Callable,
         n_particle: int = 100,
         n_lambda: int = 20,
         lambda_ratio: float = 1.2,
@@ -57,11 +53,10 @@ class PFPF_LEDH(PFPF_EDH):
         """
         Initialize PFPF_LEDH filter.
 
-        Note: use_local is forced to True for LEDH implementation.
-
         Args:
             observation_jacobian: Callable that computes the observation Jacobian
             observation_model: Callable that maps state → observation
+            observation_model_general: Callable that maps all state → all observation
             state_transition: Callable for state propagation
             n_particle: Number of particles (default: 100)
             n_lambda: Number of lambda steps (default: 20)
@@ -72,11 +67,10 @@ class PFPF_LEDH(PFPF_EDH):
         """
         # Initialize parent PFPF_EDH
         super().__init__(
-            observation_jacobian, observation_model, state_transition,
+            observation_jacobian, observation_model, observation_model_general, state_transition,
             n_particle, n_lambda, lambda_ratio,
-            use_local=False,  # We'll override flow method
             use_ekf=use_ekf, ekf_filter=ekf_filter,
-            verbose=verbose
+            verbose=verbose,
         )
 
         # LEDH-specific state
@@ -221,7 +215,7 @@ class PFPF_LEDH(PFPF_EDH):
             log_jacobian_det_sum = log_jacobian_det_sum + log_jacobian_det_vector
             log_jacobian_det_sum = log_jacobian_det_sum - tf.reduce_max(log_jacobian_det_sum)
 
-            particles_mean, _ = particle_estimate(log_weights, self.particles)
+            particles_mean, _ = self._particle_estimate(log_weights, self.particles)
             self.particles_mean = particles_mean
 
         return log_jacobian_det_sum
@@ -272,7 +266,7 @@ class PFPF_LEDH(PFPF_EDH):
                 eigenvalues = tf.linalg.eigvalsh(P_pred)
                 min_eigenvalue = tf.reduce_min(eigenvalues)
                 if min_eigenvalue <= 0:
-                    P_pred = cov_regularize(P_pred)
+                    P_pred = self._cov_regularize(P_pred)
 
                 P_pred_list.append(P_pred)
                 M_prior_list.append(x_ekf_pred)
@@ -298,7 +292,7 @@ class PFPF_LEDH(PFPF_EDH):
         self.particles = self.particles_pred
 
         # Step 4: Update auxiliary trajectory for linearization
-        mean_estimate, _ = particle_estimate(self.log_weights, self.particles)
+        mean_estimate, _ = self._particle_estimate(self.log_weights, self.particles)
         self.particles_mean = mean_estimate
 
         # self.auxiliary_trajectory = mean_estimate
@@ -319,7 +313,7 @@ class PFPF_LEDH(PFPF_EDH):
         )
 
         # Step 7: Weighted estimate (Algorithm 1, Line 30)
-        mean_estimate, _ = particle_estimate(log_weights, self.particles)
+        mean_estimate, _ = self._particle_estimate(log_weights, self.particles)
         self.particles_mean = mean_estimate
 
         # Step 8: Covariance update (Algorithm 1, Line 26-29)
@@ -334,7 +328,7 @@ class PFPF_LEDH(PFPF_EDH):
                 eigenvalues = tf.linalg.eigvalsh(P_updated)
                 min_eigenvalue = tf.reduce_min(eigenvalues)
                 if min_eigenvalue <= 0:
-                    P_updated = cov_regularize(P_updated)
+                    P_updated = self._cov_regularize(P_updated)
 
                 P_update_list.append(P_updated)
             else:
