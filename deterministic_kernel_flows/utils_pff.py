@@ -97,3 +97,52 @@ def L96_RK4(X_in: tf.Tensor, dt: float, F: float) -> tf.Tensor:
     X_out = X_in + (dt / 6.0) * (k1 + 2*k2 + 2*k3 + k4)
 
     return X_out
+
+
+def regularized_inverse(A: tf.Tensor, cond_num: float) -> tf.Tensor:
+    """
+    Compute a numerically stable inverse of a matrix using SVD with
+    condition-number-based truncation.
+
+    This is a regularized (truncated) inverse, NOT a plain matrix inverse.
+
+    Parameters
+    ----------
+    A : tf.Tensor
+        Input matrix of shape (m, n)
+    cond_num : float
+        Condition number exponent.
+        Singular values smaller than:
+            10**cond_num * max(singular_value)
+        are set to zero.
+
+    Returns
+    -------
+    A_inv : tf.Tensor
+        Regularized inverse of A
+    """
+
+    # SVD: A = U diag(S) V^T
+    s, u, v = tf.linalg.svd(A, full_matrices=False)
+
+    # Threshold for truncation
+    cond_num = tf.cast(cond_num, s.dtype)
+
+    ten = tf.constant(10.0, dtype=s.dtype)
+    
+    s_max = tf.reduce_max(s)
+    threshold = tf.pow(ten, cond_num) * s_max
+    # Invert singular values safely
+    s_inv = tf.where(
+        s < threshold,
+        tf.zeros_like(s),
+        tf.math.reciprocal(s)
+    )
+
+    # Reconstruct inverse: V diag(S^-1) U^T
+    A_inv = tf.matmul(
+        v,
+        tf.matmul(tf.linalg.diag(s_inv), u, transpose_b=True)
+    )
+
+    return A_inv
