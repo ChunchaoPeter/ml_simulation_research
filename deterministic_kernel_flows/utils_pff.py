@@ -1,4 +1,5 @@
 import tensorflow as tf
+import numpy as np
 
 def L96_RK4(X_in: tf.Tensor, dt: float, F: float) -> tf.Tensor:
     """
@@ -146,3 +147,134 @@ def regularized_inverse(A: tf.Tensor, cond_num: float) -> tf.Tensor:
     )
 
     return A_inv
+
+
+def H_linear(X):
+    """
+    Linear observation operator (identity mapping).
+    
+    Parameters:
+    -----------
+    X : tf.Tensor or np.ndarray
+        Ensemble in state space (size: [# state variables in inner domain, # ensemble members])
+    
+    Returns:
+    --------
+    Hx : tf.Tensor or np.ndarray
+        Ensemble in observation space (same size as X)
+    """
+    return X
+
+
+def H_linear_adjoint(X):
+    """
+    Adjoint of linear observation operator. This is dHdx
+    
+    Parameters:
+    -----------
+    X : tf.Tensor or np.ndarray
+        Ensemble in state space (size: [# state variables in inner domain, # ensemble members])
+    
+    Returns:
+    --------
+    dHdx : np.ndarray
+        Adjoint (size: [# state variables in inner domain, # ensemble members])
+    """
+    dim_inner, np_ens = X.shape
+    return np.ones((dim_inner, np_ens))
+
+
+def generate_L96_trajectory(dim, warm_nt, nt, dt, F, L96_RK4):
+    """Generate Lorenz 96 trajectory using TensorFlow."""
+    
+    total_steps = warm_nt + nt
+    
+    # Initialize as list to store states
+    Xt_list = []
+    
+    # Set initial condition
+    initial_state = tf.ones(dim, dtype=tf.float32) * F
+    
+    # Add perturbations at every dim//5 positions (adjusted for 0-indexing)
+    perturb_indices = tf.range(dim // 5 - 1, dim, dim // 5, dtype=tf.int32)
+    updates = tf.ones(len(perturb_indices), dtype=tf.float32)
+    initial_state = tf.tensor_scatter_nd_add(
+        initial_state,
+        tf.expand_dims(perturb_indices, 1),
+        updates
+    )
+    
+    Xt_list.append(tf.reshape(initial_state, (-1, 1)))
+    
+    # Integrate
+    print("Integrating L96 model...")
+    for t in range(total_steps - 1):
+        X_current = Xt_list[t]
+        X_next = L96_RK4(X_current, dt, F)
+        Xt_list.append(X_next)
+        
+        if (t + 1) % 200 == 0:
+            print(f"  Step {t+1}/{total_steps}")
+        
+    # Stack all states into a single tensor
+    Xt = tf.concat(Xt_list, axis=1)
+    
+    return Xt
+
+
+def generate_initial_ensemble(Xt, warm_nt, dim, np_particles, nt, Q):
+    """Generate initial ensemble for particle filter using TensorFlow."""
+    
+    # Get control mean: truth at end of warm-up + noise
+    ctlmean = Xt[:, warm_nt] + tf.random.normal((dim,), dtype=tf.float32)
+    
+    # Initialize ensemble array
+    X_list = []
+    
+    # Generate initial ensemble from N(ctlmean, Q)
+    Q = tf.cast(Q, tf.float32)
+    L = tf.linalg.cholesky(Q)
+    standard_normal = tf.random.normal((dim, np_particles), dtype=tf.float32)
+    initial_ensemble = tf.expand_dims(ctlmean, 1) + tf.matmul(L, standard_normal)
+    
+    X_list.append(tf.expand_dims(initial_ensemble, 2))
+    
+    # Add empty timesteps (will be filled later)
+    for t in range(1, nt):
+        X_list.append(tf.zeros((dim, np_particles, 1), dtype=tf.float32))
+    
+    X = tf.concat(X_list, axis=2)
+    
+    print(f"Initial ensemble generated with {np_particles} particles")
+    
+    return X
+
+def run_ensemble_no_DA(X, nt, dt, F, L96_RK4):
+    """Run ensemble without data assimilation (free run) using TensorFlow."""
+    
+    print("Running ensemble without DA (free run)...")
+    
+    # Initialize list to store ensemble states
+    XnoDA_list = []
+    
+    # Copy initial ensemble
+    XnoDA_list.append(X[:, :, 0])
+    
+    # Run ensemble forward without DA
+    for t in range(nt - 1):
+        X_current = XnoDA_list[t]
+        X_next = L96_RK4(X_current, dt, F)
+        XnoDA_list.append(X_next)
+        
+        if (t + 1) % 50 == 0:
+            print(f"  Timestep {t+1}/{nt}")
+    
+    print("Free run complete!")
+    
+    # Stack all states into a single tensor
+    XnoDA = tf.stack(XnoDA_list, axis=2)
+    
+    # Save initial state
+    np.save('XnoDA.npy', XnoDA.numpy())
+    
+    return XnoDA
