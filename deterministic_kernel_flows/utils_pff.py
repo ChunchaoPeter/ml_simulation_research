@@ -1,5 +1,6 @@
 import tensorflow as tf
 import numpy as np
+from typing import Tuple, Dict, Callable, Optional
 
 def L96_RK4(X_in: tf.Tensor, dt: float, F: float) -> tf.Tensor:
     """
@@ -100,6 +101,64 @@ def L96_RK4(X_in: tf.Tensor, dt: float, F: float) -> tf.Tensor:
     return X_out
 
 
+def generate_observations(Xt, nt, warm_nt, obs_interval, dim_interval, R, nx=40):
+    """
+    Generate synthetic observations from true state with observation noise.
+    
+    Parameters:
+    -----------
+    Xt : tf.Tensor
+        True state trajectory, shape [nx, warm_nt + nt]
+    nt : int
+        Number of time steps (after warmup)
+    warm_nt : int
+        Number of warmup time steps
+    obs_interval : int
+        Observation interval (observe every obs_interval time steps)
+    dim_interval : int
+        Dimension interval (observe every dim_interval-th variable)
+    R : float
+        Observation error
+    nx : int, default=40
+        State dimension
+        
+    Returns:
+    --------
+    y_obs : tf.Tensor
+        Observations with noise, shape [ny_obs, total_obs]
+    obs_indices : tf.Tensor
+        Time indices of observations (0-based)
+    dim_indices : tf.Tensor
+        Variable indices observed (0-based)
+    """
+    # Calculate number of observations
+    total_obs = nt // obs_interval
+    
+    # Determine which variables are observed (every dim_interval-th variable starting from index 3)
+    dim_indices = tf.range(3, nx, dim_interval, dtype=tf.int32)
+    ny_obs = len(dim_indices)
+        
+    # Generate observation noise: obs_rnd ~ N(0, R)
+    z = tf.random.normal(shape=[ny_obs, total_obs], mean=0.0, stddev=1.0, dtype=tf.float32)
+    L = tf.linalg.cholesky(R)
+    obs_rnd = tf.matmul(L, z)  # Shape: [ny_obs, total_obs]
+    
+    # Determine which time steps are observed
+    # Python (0-based): warm_nt-1+obs_interval : obs_interval : warm_nt+nt
+    obs_indices = tf.range(warm_nt - 1 + obs_interval, warm_nt + nt, obs_interval, dtype=tf.int32)
+    
+    # Extract observed variables (spatial sampling)
+    Xt_dim = tf.gather(Xt, dim_indices, axis=0)  # Shape: [ny_obs, warm_nt + nt]
+    
+    # Extract observed time steps (temporal sampling)
+    Xt_final = tf.gather(Xt_dim, obs_indices, axis=1)  # Shape: [ny_obs, total_obs]
+    
+    # Apply observation operator and add noise
+    y_obs = H_linear(Xt_final) + obs_rnd  # Shape: [ny_obs, total_obs]
+    
+    return y_obs, obs_indices, dim_indices
+
+
 def regularized_inverse(A: tf.Tensor, cond_num: float) -> tf.Tensor:
     """
     Compute a numerically stable inverse of a matrix using SVD with
@@ -181,7 +240,7 @@ def H_linear_adjoint(X):
         Adjoint (size: [# state variables in inner domain, # ensemble members])
     """
     dim_inner, np_ens = X.shape
-    return np.ones((dim_inner, np_ens))
+    return tf.ones((dim_inner, np_ens), dtype=X.dtype)
 
 
 def generate_L96_trajectory(dim, warm_nt, nt, dt, F, L96_RK4):
@@ -278,3 +337,219 @@ def run_ensemble_no_DA(X, nt, dt, F, L96_RK4):
     np.save('XnoDA.npy', XnoDA.numpy())
     
     return XnoDA
+
+
+def compute_prior_covariance(particles, inflation_fac=1.0):
+    """
+    Compute prior covariance from ensemble of particles.
+    
+    B = (inflation_fac / (N_p - 1)) * X X^T
+    
+    where X is the anomaly matrix.
+    
+    Parameters:
+    -----------
+    particles : tf.Tensor (dim, n_particles)
+        Ensemble of particles
+    inflation_fac : float
+        Covariance inflation factor
+        
+    Returns:
+    --------
+    B : tf.Tensor (dim, dim)
+        Prior covariance matrix
+    mean : tf.Tensor (dim,)
+        Ensemble mean
+    """
+    n_particles = particles.shape[1]
+    
+    # Ensemble mean
+    mean = tf.reduce_mean(particles, axis=1)
+    
+    # Anomalies
+    anomalies = particles - tf.expand_dims(mean, axis=1)
+    
+    # Sample covariance with inflation
+    B = (inflation_fac / (n_particles - 1)) * tf.matmul(anomalies, anomalies, transpose_b=True)/n_particles
+    
+    return B, tf.expand_dims(mean, axis=1)
+
+
+def build_localization_mask(dim: int, r_influ: int, dtype=tf.float32) -> tf.Tensor:
+    """
+    Construct a periodic Gaussian localization (correlation) mask.
+
+    This function builds a symmetric, banded localization matrix used for
+    covariance localization in data assimilation algorithms (e.g. EnKF,
+    particle filters, particle flow filters).
+
+    The mask entries decay with the periodic distance between state indices
+    according to a Gaussian function,
+
+        rho_ij = exp( - (d(i, j) / r_influ)^2 ),
+
+    where d(i, j) = min(|i - j|, dim - |i - j|) is the periodic distance.
+    Correlations are truncated to zero for distances larger than 3 * r_influ,
+    resulting in a compact-support, numerically stable localization.
+
+    The diagonal entries are equal to 1, ensuring each state variable is
+    fully correlated with itself.
+
+    The returned mask is intended to be applied via element-wise (Hadamard)
+    multiplication with a covariance matrix:
+
+        P_localized = P * mask_tf
+
+    Parameters
+    ----------
+    dim : int
+        Dimension of the state vector.
+    r_influ : int
+        Localization influence radius controlling the decay of correlations.
+    dtype : tf.DType, optional
+        TensorFlow floating-point data type (default: tf.float32).
+
+    Returns
+    -------
+    mask_tf : tf.Tensor
+        Periodic Gaussian localization mask of shape (dim, dim).
+    """
+    mask_tf = tf.eye(dim, dtype=dtype)
+
+    for i in range(1, 3 * r_influ + 1):
+        diag_val = tf.exp(tf.constant(-i**2 / r_influ**2, dtype=dtype))
+
+        # Main diagonals (distance i)
+        upper_diag = tf.linalg.diag(tf.ones(dim - i, dtype=dtype), k=i)
+        lower_diag = tf.linalg.diag(tf.ones(dim - i, dtype=dtype), k=-i)
+
+        # Periodic (wrap-around) diagonals
+        wrap_upper = tf.linalg.diag(tf.ones(i, dtype=dtype), k=-(dim - i))
+        wrap_lower = tf.linalg.diag(tf.ones(i, dtype=dtype), k=(dim - i))
+
+        mask_tf += diag_val * (upper_diag + lower_diag + wrap_upper + wrap_lower)
+
+    return mask_tf
+
+
+
+def generate_Hx_si(pseudo_Xs, dim_interval, nx=40):
+    """
+    Generate synthetic observations from true state with observation noise.
+    
+    Parameters:
+    -----------
+    pseudo_Xs : tf.Tensor
+        True state trajectory, shape [nx, np_particles]
+ 
+    Returns:
+    --------
+    Hx_si : tf.Tensor
+        Model Observations, shape [ny_obs, np_particles]
+    """
+    # Calculate number of observations
+    
+    # Determine which variables are observed (every dim_interval-th variable starting from index 3)
+    dim_indices = tf.range(3, nx, dim_interval, dtype=tf.int32)
+
+    # Extract observed variables (spatial sampling)
+    Xt_dim = tf.gather(pseudo_Xs, dim_indices, axis=0)
+    
+    
+    # Apply observation operator 
+    Hx_si = H_linear(Xt_dim) 
+    
+    return Hx_si
+
+
+def compute_grad_log_posterior(
+    X_tmp_tf: tf.Tensor,
+    y_obs: tf.Tensor,
+    obs_time: int,
+    dim_interval: tf.Tensor,
+    dim_indices: tf.Tensor,
+    B_inv_tf: tf.Tensor,
+    X_mean_tf: tf.Tensor,
+    R: tf.Tensor,
+    generate_Hx_si: Callable,
+    H_linear_adjoint: Callable,
+    dim: int,
+    nx: int,
+) -> tf.Tensor:
+    """
+    Compute gradient of log-posterior for all particles.
+
+    ∇ log p(x | y) = ∇ log p(y | x) + ∇ log p(x)
+
+    Args
+    ----
+    X_tmp_tf : (dim, np) tensor
+        Particle states
+    y_obs : (ny, T) tensor
+        Observations
+    obs_time : int
+        Current observation time index
+    dim_interval : (ny,) tensor
+        State dimension interval for each observation
+    dim_indices : (ny,) tensor
+        State dimension index for each observation
+    B_inv_tf : (dim, dim) tensor
+        Inverse background covariance
+    X_mean_tf : (dim, 1) tensor
+        Prior mean
+    R : (ny, ny) tensor
+        Observation noise covariance
+    generate_Hx_si : callable
+        Nonlinear observation operator
+    H_linear_adjoint : callable
+        Adjoint of linearized observation operator
+    dim : int
+        State dimension
+    nx : int
+        Model dimension for H operator
+
+    Returns
+    -------
+    grad_log_posterior : (dim, np) tensor
+    """
+
+    # ----------------------------
+    # Setup
+    # ----------------------------
+    pseudo_Xs = tf.identity(X_tmp_tf)
+    np_particles = tf.shape(pseudo_Xs)[1]
+    ny_obs = tf.shape(y_obs)[0]
+
+    obs_current_tf = tf.expand_dims(y_obs[:, obs_time], axis=1)
+
+    # ----------------------------
+    # Forward observation model and Build dH/dx tensor
+    # ----------------------------
+    y_i = generate_Hx_si(pseudo_Xs, dim_interval, nx)
+    dHdx = tf.zeros((ny_obs, dim, np_particles), tf.float32)
+    for i in range(ny_obs):
+        inner_ind = dim_indices[i]
+        tmp_dHdx = H_linear_adjoint(tf.expand_dims(pseudo_Xs[i, :],1))
+        dHdx = tf.tensor_scatter_nd_update(
+            dHdx,
+            indices=[[i, inner_ind]],
+            updates=tf.reshape(tmp_dHdx, (1, np_particles))
+        )
+
+    grad_log_posterior = []
+    for i in range(np_particles):
+
+        grad_log_prior_i = -tf.matmul(B_inv_tf, pseudo_Xs[:, i][:, None] - X_mean_tf)
+        
+        innovation = obs_current_tf - y_i[:, i][:, None]
+        dHi_T = tf.transpose(dHdx[:, :, i])
+        R_inv_innov = tf.linalg.solve(R, innovation)
+        grad_log_likelihood_i = tf.matmul(dHi_T, R_inv_innov)
+
+        grad_log_posterior_i = grad_log_likelihood_i + grad_log_prior_i
+        
+        grad_log_posterior.append(grad_log_posterior_i)
+    tmp_grad_log_posterior = tf.concat(grad_log_posterior, 1)
+
+
+    return tmp_grad_log_posterior
