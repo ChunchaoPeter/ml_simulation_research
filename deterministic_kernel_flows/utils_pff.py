@@ -553,3 +553,163 @@ def compute_grad_log_posterior(
 
 
     return tmp_grad_log_posterior
+
+
+def compute_matrix_kernel_and_gradient(pseudo_X, d, B, alpha):
+    """
+    Compute matrix kernel matrix and its gradient for a specific dimension.
+    
+    Parameters:
+    -----------
+    pseudo_X : tf.Tensor
+        Input tensor of shape (n_samples, n_features)
+    d : int
+        Dimension index to compute for
+    B : tf.Tensor
+        Diagonal matrix or tensor containing bandwidth parameters
+    alpha : float or tf.Tensor
+        Scaling parameter for the kernel
+    
+    Returns:
+    --------
+    tmp_K : tf.Tensor
+        Kernel matrix computed using RBF kernel
+    tmp_grad_K : tf.Tensor
+        Gradient of the kernel matrix
+    """
+    # Extract the d-th row as a single sample
+    pseudo_X_d = pseudo_X[d:d+1, :]
+    
+    # Compute pairwise differences
+    diff_matrix = pseudo_X_d - tf.transpose(pseudo_X_d)
+    
+    # Compute RBF kernel
+    tmp_K = tf.exp(-0.5 * diff_matrix**2 / (B[d, d] * alpha))
+    
+    # Compute gradient of kernel
+    tmp_grad_K = -tmp_K / (B[d, d] * alpha) * (-diff_matrix)
+    
+    return tmp_K, tmp_grad_K
+
+
+def adaptive_pseudo_step(
+    pseudo_X: tf.Tensor,
+    eps: tf.Tensor,
+    grad_KL_tf: tf.Tensor,
+    qn_tf: tf.Tensor,
+    norm_grad_KL: tf.Tensor,
+    obs_time: int,
+    s: int,
+    ct: int,
+    stop_cri: float | None,  # Added as input parameter
+    stop_cri_percentage: float,
+    min_learning_rate: float,
+    max_pseudo_step: int,
+) -> tuple[tf.Tensor, tf.Tensor, int, int, bool, float | None]:
+    """
+    Perform one adaptive pseudo-time update step with automatic learning rate adjustment.
+    
+    This function implements an adaptive gradient descent scheme that:
+    - Reduces learning rate when gradient norm increases (backtracking)
+    - Increases learning rate after consecutive successful steps
+    - Stops when learning rate becomes too small
+    
+    Parameters
+    ----------
+    pseudo_X : tf.Tensor
+        Current pseudo state to be updated
+    eps : tf.Tensor, shape (max_pseudo_step,)
+        Learning rate schedule for all pseudo steps
+    grad_KL_tf : tf.Tensor
+        KL divergence gradient at current step
+    qn_tf : tf.Tensor
+        Preconditioner or quasi-Newton direction matrix
+    norm_grad_KL : tf.Tensor, shape (n_times, max_pseudo_step)
+        History of gradient norms for all observation times and steps
+    obs_time : int
+        Current observation time index
+    s : int
+        Current pseudo-time step index
+    ct : int
+        Counter for consecutive successful steps (used for learning rate increase)
+    stop_cri : float or None
+        Current stopping criterion value (None initially, set when s == 0)
+    stop_cri_percentage : float
+        Percentage multiplier for initial stopping criterion (e.g., 0.01 for 1%)
+    min_learning_rate : float
+        Minimum allowed learning rate threshold
+    max_pseudo_step : int
+        Maximum number of pseudo steps allowed
+    
+    Returns
+    -------
+    pseudo_X : tf.Tensor
+        Updated pseudo state
+    eps : tf.Tensor
+        Updated learning rate schedule
+    s : int
+        Updated pseudo-time index
+    ct : int
+        Updated consecutive success counter
+    stop : bool
+        Whether iteration should stop (True if learning rate too small)
+    stop_cri : float or None
+        Stopping criterion value (computed when s == 0, preserved otherwise)
+    
+    Notes
+    -----
+    The function uses the following adaptive strategy:
+    - If gradient norm increases by >2%, reduce learning rate by 1.5x and backtrack
+    - If gradient norm is stable for 7+ steps, increase learning rate by 1.5x
+    - Learning rate adjustments propagate to all future steps
+    """
+    stop = False
+    
+    # --- Case 1: Initialization ---
+    if s == 0:
+        stop_cri = stop_cri_percentage * norm_grad_KL[obs_time, 0]
+        pseudo_X = pseudo_X + eps[s] * tf.matmul(qn_tf, grad_KL_tf)
+        s += 1
+        ct += 1
+    
+    # --- Case 2: Learning rate too small ---
+    elif eps[s] < min_learning_rate:
+        print("    [Note] Learning rate too small, break!")
+        stop = True
+    
+    # --- Case 3: Gradient increased → reduce eps, backtrack ---
+    elif s >= 1 and norm_grad_KL[obs_time, s] > 1.02 * norm_grad_KL[obs_time, s - 1]:
+        # when the norm(grad_KL) becomes larger, it could be the learning rate is too large!
+        new_eps = eps[s] / 1.5
+        indices = tf.range(s - 1, max_pseudo_step)
+        updates = tf.fill([max_pseudo_step - s + 1], new_eps)
+        eps = tf.tensor_scatter_nd_update(
+            eps,
+            tf.reshape(indices, [-1, 1]),
+            updates
+        )
+        s -= 1
+        ct = 0
+        print("    [Note] eps changed to", eps[s], ", redo iteration")
+    
+    # --- Case 4: Stable gradient → increase eps ---
+    elif ct >= 7 and norm_grad_KL[obs_time, s] <= 1.02 * norm_grad_KL[obs_time, s - 1]:
+        new_eps = eps[s] * 1.5
+        indices = tf.range(s, max_pseudo_step)
+        updates = tf.fill([max_pseudo_step - s], new_eps)
+        eps = tf.tensor_scatter_nd_update(
+            eps,
+            tf.reshape(indices, [-1, 1]),
+            updates
+        )
+        pseudo_X = pseudo_X + eps[s] * tf.matmul(qn_tf, grad_KL_tf)
+        s += 1
+        ct = 0
+    
+    # --- Case 5: Normal update ---
+    else:
+        pseudo_X = pseudo_X + eps[s] * tf.matmul(qn_tf, grad_KL_tf)
+        s += 1
+        ct += 1
+    
+    return pseudo_X, eps, s, ct, stop, stop_cri
