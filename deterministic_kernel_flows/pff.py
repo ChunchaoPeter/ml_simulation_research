@@ -631,7 +631,7 @@ class ParticleFlowFilter:
             
             # Step 2: Assimilation
             if io_obs:
-                obs_time = (t + 1) // self.obs_interval
+                obs_time = (t + 1) // self.obs_interval - 1
                 X_list[t+1], _ = self.assimilate(
                     X_list, y_obs, t, obs_time, verbose=verbose
                 )
