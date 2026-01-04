@@ -190,7 +190,7 @@ class ParticleFlowFilter:
         
         # Sample covariance with inflation
         B = (self.inflation_fac / (self.np_particles - 1)) * \
-            tf.matmul(anomalies, anomalies, transpose_b=True)/self.np_particles
+            tf.matmul(anomalies, anomalies, transpose_b=True)
         
         return B, tf.expand_dims(mean, axis=1)
     
