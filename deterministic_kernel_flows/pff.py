@@ -31,6 +31,7 @@ class ParticleFlowFilter:
         H_linear_adjoint: Optional[Callable] = None,
         dtype: tf.DType = tf.float32,
         learning_rate_factor: float = 1.5,
+        kernel_type: str = 'matrix',
     ):
         """
         Initialize the Particle Flow Filter.
@@ -73,6 +74,10 @@ class ParticleFlowFilter:
             TensorFlow data type (default: tf.float32)
         learning_rate_factor : float, optional
             Learning rate adjustment factor (default: 1.5)
+        kernel_type : str, optional
+            Type of kernel to use: 'scalar' or 'matrix' (default: 'matrix')
+            - 'scalar': Uses scalar Gaussian kernel (Eq. 16-19 in Hu & Van Leeuwen 2021)
+            - 'matrix': Uses matrix-valued Gaussian kernel (Eq. 20-23 in Hu & Van Leeuwen 2021)
         """
         # Core dimensions
         self.dim = dim
@@ -81,7 +86,7 @@ class ParticleFlowFilter:
         self.obs_interval = obs_interval
         self.total_obs = total_obs
         self.nx = nx
-        
+
         # Observation configuration
         self.dim_interval = dim_interval
         # The dimension start for 4 for the L96_RK4 dataset
@@ -96,6 +101,11 @@ class ParticleFlowFilter:
         self.eps_init = eps_init
         self.stop_cri_percentage = stop_cri_percentage
         self.min_learning_rate = min_learning_rate
+
+        # Kernel configuration
+        if kernel_type not in ['scalar', 'matrix']:
+            raise ValueError(f"kernel_type must be 'scalar' or 'matrix', got '{kernel_type}'")
+        self.kernel_type = kernel_type
         
         # Prior configuration
         self.inflation_fac = inflation_fac
@@ -274,7 +284,7 @@ class ParticleFlowFilter:
     ) -> Tuple[tf.Tensor, tf.Tensor]:
         """
         Compute matrix kernel and its gradient for dimension d.
-        
+
         Parameters:
         -----------
         pseudo_X : tf.Tensor, shape (dim, np_particles)
@@ -283,7 +293,7 @@ class ParticleFlowFilter:
             Dimension index
         B : tf.Tensor, shape (dim, dim)
             Prior covariance matrix
-            
+
         Returns:
         --------
         K : tf.Tensor, shape (np_particles, np_particles)
@@ -293,17 +303,85 @@ class ParticleFlowFilter:
         """
         # Extract d-th dimension
         pseudo_X_d = pseudo_X[d:d+1, :]
-        
+
         # Pairwise differences
         diff_matrix = pseudo_X_d - tf.transpose(pseudo_X_d)
-        
+
         # RBF kernel
         K = tf.exp(-0.5 * diff_matrix**2 / (B[d, d] * self.alpha))
-        
+
         # Kernel gradient
         grad_K = -K / (B[d, d] * self.alpha) * (-diff_matrix)
-        
+
         return K, grad_K
+
+    def compute_scalar_kernel_and_divergence(
+        self,
+        pseudo_X: tf.Tensor,
+        B: tf.Tensor
+    ) -> Tuple[tf.Tensor, tf.Tensor]:
+        """
+        Compute scalar Gaussian kernel and its divergence.
+
+        Based on Equations 16-19 from Hu & Van Leeuwen (2021):
+        K(x, z) = K(x, z) * I_nx
+        where K(x, z) = exp(-1/2 * (x - z)^T * A * (x - z))
+        and A = (α * B)^(-1)
+
+        Divergence: ∇_x · K(x, z) = -A^T(x - z)K(x, z)
+
+        Parameters:
+        -----------
+        pseudo_X : tf.Tensor, shape (dim, np_particles)
+            Current particle states
+        B : tf.Tensor, shape (dim, dim)
+            Prior covariance matrix
+
+        Returns:
+        --------
+        K : tf.Tensor, shape (np_particles, np_particles)
+            Scalar kernel values (same for all dimensions)
+        div_K : tf.Tensor, shape (dim, np_particles, np_particles)
+            Divergence of kernel for each dimension
+        """
+        # Compute A = (α * B)^(-1)
+        A = tf.linalg.inv(self.alpha * B)
+
+        # Compute pairwise kernel values
+        # K[i, j] = exp(-0.5 * (x_i - x_j)^T * A * (x_i - x_j))
+        K_matrix = tf.zeros((self.np_particles, self.np_particles), dtype=self.dtype)
+
+        for i in range(self.np_particles):
+            for j in range(self.np_particles):
+                diff = tf.reshape(pseudo_X[:, i] - pseudo_X[:, j], (-1, 1))
+                quad_form = tf.matmul(tf.matmul(tf.transpose(diff), A), diff)
+                K_val = tf.exp(-0.5 * quad_form[0, 0])
+                K_matrix = tf.tensor_scatter_nd_update(
+                    K_matrix,
+                    indices=[[i, j]],
+                    updates=[K_val]
+                )
+
+        # Compute divergence: ∇_x · K(x, z) = -A^T(x - z)K(x, z)
+        # For each dimension d and particle pair (i, j):
+        # div_K[d, i, j] = -sum_k A^T[d, k] * (x_i[k] - x_j[k]) * K[i, j]
+        div_K = tf.zeros((self.dim, self.np_particles, self.np_particles), dtype=self.dtype)
+
+        A_T = tf.transpose(A)
+        for i in range(self.np_particles):
+            for j in range(self.np_particles):
+                diff_vec = pseudo_X[:, i] - pseudo_X[:, j]  # (dim,)
+                # A^T @ diff_vec gives (dim,) vector
+                grad_component = -tf.linalg.matvec(A_T, diff_vec) * K_matrix[i, j]
+
+                for d in range(self.dim):
+                    div_K = tf.tensor_scatter_nd_update(
+                        div_K,
+                        indices=[[d, i, j]],
+                        updates=[grad_component[d]]
+                    )
+
+        return K_matrix, div_K
     
     def adaptive_pseudo_step(
         self,
@@ -497,18 +575,42 @@ class ParticleFlowFilter:
             grad_log_post = self.compute_grad_log_posterior(
                 pseudo_X, y_obs, obs_time, B_inv, X_mean
             )
-            
+
             # Compute particle flow (Stein gradient)
-            grad_KL_list = []
-            for d in range(self.dim):
-                K_d, grad_K_d = self.compute_matrix_kernel_and_gradient(pseudo_X, d, B)
-                grad_KL_d = (
-                    tf.reduce_sum(K_d * grad_log_post[d:d+1, :], axis=1, keepdims=True) + 
-                    tf.reduce_sum(grad_K_d, axis=1, keepdims=True)
-                ) / self.np_particles
-                grad_KL_list.append(tf.transpose(grad_KL_d))
-            
-            grad_KL = tf.concat(grad_KL_list, axis=0)
+            if self.kernel_type == 'matrix':
+                # Matrix-valued kernel (Eq. 20-23)
+                grad_KL_list = []
+                for d in range(self.dim):
+                    K_d, grad_K_d = self.compute_matrix_kernel_and_gradient(pseudo_X, d, B)
+                    grad_KL_d = (
+                        tf.reduce_sum(K_d * grad_log_post[d:d+1, :], axis=1, keepdims=True) +
+                        tf.reduce_sum(grad_K_d, axis=1, keepdims=True)
+                    ) / self.np_particles
+                    grad_KL_list.append(tf.transpose(grad_KL_d))
+                grad_KL = tf.concat(grad_KL_list, axis=0)
+
+            elif self.kernel_type == 'scalar':
+                # Scalar kernel (Eq. 16-19)
+                K_scalar, div_K_scalar = self.compute_scalar_kernel_and_divergence(pseudo_X, B)
+
+                # For each particle i, compute the flow
+                # f_s(x_i) = (1/N_p) * sum_j [K(x_j, x_i) * grad_log_post(x_j) + div_K(x_j, x_i)]
+                grad_KL_list = []
+                for i in range(self.np_particles):
+                    # Kernel term: sum over j of K[j, i] * grad_log_post[:, j]
+                    kernel_term = tf.reduce_sum(
+                        K_scalar[:, i:i+1] * grad_log_post,  # (np_particles, 1) * (dim, np_particles)
+                        axis=1,
+                        keepdims=True
+                    )  # (dim, 1)
+
+                    # Divergence term: sum over j of div_K[:, j, i]
+                    div_term = tf.reduce_sum(div_K_scalar[:, :, i], axis=1, keepdims=True)  # (dim, 1)
+
+                    grad_KL_i = (kernel_term + div_term) / self.np_particles
+                    grad_KL_list.append(grad_KL_i)
+
+                grad_KL = tf.concat(grad_KL_list, axis=1)  # (dim, np_particles)
             
             # Record gradient norm
             norm_value = tf.sqrt(tf.reduce_sum(grad_KL**2) / (self.dim * self.np_particles))
