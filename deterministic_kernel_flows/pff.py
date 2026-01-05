@@ -283,7 +283,13 @@ class ParticleFlowFilter:
         B: tf.Tensor
     ) -> Tuple[tf.Tensor, tf.Tensor]:
         """
-        Compute matrix kernel and its gradient for dimension d.
+        Compute matrix-valued kernel and its divergence for dimension d.
+
+        Based on Equations 20-23 from Hu & Van Leeuwen (2021):
+        - K^(d)(x, z) = exp(-1/2 * (x^(d) - z^(d))^2 / (α * σ_d^2))
+        - ∇_{x} K^(d)(x, z) = -K^(d)(x, z) * (x^(d) - z^(d)) / (α * σ_d^2)
+
+        For diagonal matrix kernel, divergence component d equals gradient in dimension d.
 
         Parameters:
         -----------
@@ -292,14 +298,14 @@ class ParticleFlowFilter:
         d : int
             Dimension index
         B : tf.Tensor, shape (dim, dim)
-            Prior covariance matrix
+            Prior covariance matrix (B[d,d] = σ_d^2)
 
         Returns:
         --------
         K : tf.Tensor, shape (np_particles, np_particles)
-            Kernel matrix
+            Kernel matrix where K[i,j] = K^(d)(x_i^(d), x_j^(d))
         grad_K : tf.Tensor, shape (np_particles, np_particles)
-            Gradient of kernel matrix
+            Divergence where grad_K[i,j] = ∂/∂x_j^(d) K^(d)(x_i^(d), x_j^(d))
         """
         # Extract d-th dimension
         pseudo_X_d = pseudo_X[d:d+1, :]
@@ -318,70 +324,190 @@ class ParticleFlowFilter:
     def compute_scalar_kernel_and_divergence(
         self,
         pseudo_X: tf.Tensor,
+        d: int,
         B: tf.Tensor
     ) -> Tuple[tf.Tensor, tf.Tensor]:
         """
-        Compute scalar Gaussian kernel and its divergence.
+        Compute scalar Gaussian kernel and its divergence for dimension d.
 
         Based on Equations 16-19 from Hu & Van Leeuwen (2021):
-        K(x, z) = K(x, z) * I_nx
-        where K(x, z) = exp(-1/2 * (x - z)^T * A * (x - z))
-        and A = (α * B)^(-1)
+        - K(x, z) = K(x, z) * I_nx  (Eq. 16)
+        - K(x, z) = exp(-1/2 * (x - z)^T * A * (x - z))  (Eq. 17)
+        - A = (α * B)^(-1)  (Eq. 18)
+        - ∇_x · K(x, z) = -A^T(x - z)K(x, z)  (Eq. 19)
 
-        Divergence: ∇_x · K(x, z) = -A^T(x - z)K(x, z)
+        For the scalar kernel, K(x_i, x_j) is the SAME for all dimensions (depends on full state),
+        but the divergence component varies by dimension:
+        [∇_{x_i} · K(x_i, x_j)]_d = -[A^T(x_i - x_j)]_d * K(x_i, x_j)
 
         Parameters:
         -----------
         pseudo_X : tf.Tensor, shape (dim, np_particles)
             Current particle states
+        d : int
+            Dimension index
         B : tf.Tensor, shape (dim, dim)
             Prior covariance matrix
 
         Returns:
         --------
         K : tf.Tensor, shape (np_particles, np_particles)
-            Scalar kernel values (same for all dimensions)
-        div_K : tf.Tensor, shape (dim, np_particles, np_particles)
-            Divergence of kernel for each dimension
+            Scalar kernel values where K[i,j] = K(x_i, x_j)
+            Note: This is the SAME for all dimensions
+        grad_K : tf.Tensor, shape (np_particles, np_particles)
+            Divergence component d where grad_K[i,j] = [∇_{x_i} · K(x_i, x_j)]_d
         """
         # Compute A = (α * B)^(-1)
         A = tf.linalg.inv(self.alpha * B)
 
-        # Compute pairwise kernel values
+        # Vectorized computation of all pairwise kernel values
+        # Shape: (dim, np_particles, 1) - (dim, 1, np_particles) = (dim, np_particles, np_particles)
+        # diff[:, i, j] = x_i - x_j
+        X_i = tf.expand_dims(pseudo_X, axis=2)  # (dim, np_particles, 1)
+        X_j = tf.expand_dims(pseudo_X, axis=1)  # (dim, 1, np_particles)
+        diff = X_i - X_j  # (dim, np_particles, np_particles)
+
+        # ============================================================================
+        # EINSUM 1: Matrix-Tensor multiplication for A @ diff
+        # ============================================================================
+        # Mathematical Formula:
+        #   [A @ diff]_{k,i,j} = ∑_l A_{k,l} × diff_{l,i,j}
+        #
+        # This computes the matrix-vector product A × (x_i - x_j) for all particle pairs
+        #
+        # Input shapes:
+        #   A:    (dim, dim)                  - Precision matrix
+        #   diff: (dim, np_particles, np_particles) - All pairwise differences
+        #
+        # Output shape:
+        #   A_diff: (dim, np_particles, np_particles)
+        #
+        # Einstein notation: 'kl,lij->kij'
+        #   - 'kl': A has indices (k, l) where k,l ∈ [0, dim-1]
+        #   - 'lij': diff has indices (l, i, j) where l ∈ [0, dim-1], i,j ∈ [0, np_particles-1]
+        #   - Shared index 'l' is summed over (matrix multiplication)
+        #   - Result 'kij': output has indices (k, i, j)
+        #
+        # Example (simplified with dim=2, np_particles=3):
+        #   A = [[a00, a01],     diff[:,:,0] = [[d00, d01, d02],
+        #        [a10, a11]]                     [d10, d11, d12]]
+        #
+        #   A_diff[0,1,2] = a00×d01,2 + a01×d11,2  (first row of A × diff[:,1,2])
+        #   A_diff[1,1,2] = a10×d01,2 + a11×d11,2  (second row of A × diff[:,1,2])
+        #
+        A_diff = tf.einsum('kl,lij->kij', A, diff)  # (dim, np_particles, np_particles)
+
+        # ============================================================================
+        # EINSUM 2: Quadratic form computation
+        # ============================================================================
+        # Mathematical Formula:
+        #   quad_form_{i,j} = ∑_k (x_i - x_j)_k × [A(x_i - x_j)]_k
+        #                   = (x_i - x_j)^T × A × (x_i - x_j)
+        #
+        # This is the exponent term in the Gaussian kernel
+        #
+        # Input shapes:
+        #   diff:   (dim, np_particles, np_particles)
+        #   A_diff: (dim, np_particles, np_particles)
+        #
+        # Output shape:
+        #   quad_form: (np_particles, np_particles)
+        #
+        # Einstein notation: 'kij,kij->ij'
+        #   - Both inputs have indices (k, i, j)
+        #   - Element-wise multiplication along dimension k, then sum
+        #   - Result 'ij': scalar value for each particle pair
+        #
+        # Example (dim=2, np_particles=3):
+        #   quad_form[1,2] = diff[0,1,2]×A_diff[0,1,2] + diff[1,1,2]×A_diff[1,1,2]
+        #                  = (x1-x2)^T × A × (x1-x2)
+        #
+        # This is equivalent to, but more efficient than:
+        #   tf.reduce_sum(diff * A_diff, axis=0)
+        #
+        quad_form = tf.einsum('kij,kij->ij', diff, A_diff)  # (np_particles, np_particles)
+
+        # Compute kernel: K[i, j] = exp(-0.5 * quad_form[i, j])
+        # Note: This is the SAME for all dimensions (scalar kernel property)
+        K = tf.exp(-0.5 * quad_form)  # (np_particles, np_particles)
+
+
+        # tf.einsum is much faster the following for loop: compute pairwise kernel values
         # K[i, j] = exp(-0.5 * (x_i - x_j)^T * A * (x_i - x_j))
-        K_matrix = tf.zeros((self.np_particles, self.np_particles), dtype=self.dtype)
+        # K_matrix = tf.zeros((self.np_particles, self.np_particles), dtype=self.dtype)
 
-        for i in range(self.np_particles):
-            for j in range(self.np_particles):
-                diff = tf.reshape(pseudo_X[:, i] - pseudo_X[:, j], (-1, 1))
-                quad_form = tf.matmul(tf.matmul(tf.transpose(diff), A), diff)
-                K_val = tf.exp(-0.5 * quad_form[0, 0])
-                K_matrix = tf.tensor_scatter_nd_update(
-                    K_matrix,
-                    indices=[[i, j]],
-                    updates=[K_val]
-                )
+        # for i in range(self.np_particles):
+        #     for j in range(self.np_particles):
+        #         diff = tf.reshape(pseudo_X[:, i] - pseudo_X[:, j], (-1, 1))
+        #         quad_form = tf.matmul(tf.matmul(tf.transpose(diff), A), diff)
+        #         K_val = tf.exp(-0.5 * quad_form[0, 0])
+        #         K_matrix = tf.tensor_scatter_nd_update(
+        #             K_matrix,
+        #             indices=[[i, j]],
+        #             updates=[K_val]
+        #         )
 
-        # Compute divergence: ∇_x · K(x, z) = -A^T(x - z)K(x, z)
-        # For each dimension d and particle pair (i, j):
-        # div_K[d, i, j] = -sum_k A^T[d, k] * (x_i[k] - x_j[k]) * K[i, j]
-        div_K = tf.zeros((self.dim, self.np_particles, self.np_particles), dtype=self.dtype)
+        # Compute the d-th component of divergence: ∇_x · K(x, z) = -A^T(x - z)K(x, z)
+        # For dimension d: [∇_{x_i} · K(x_i, x_j)]_d = -[A^T]_d · (x_i - x_j) * K(x_i, x_j)
+        # where [A^T]_d is the d-th row of A^T (or d-th column of A)
 
-        A_T = tf.transpose(A)
-        for i in range(self.np_particles):
-            for j in range(self.np_particles):
-                diff_vec = pseudo_X[:, i] - pseudo_X[:, j]  # (dim,)
-                # A^T @ diff_vec gives (dim,) vector
-                grad_component = -tf.linalg.matvec(A_T, diff_vec) * K_matrix[i, j]
+        # Extract d-th row of A^T (= d-th column of A)
+        A_T_row_d = A[:, d:d+1]  # (dim, 1)
 
-                for d in range(self.dim):
-                    div_K = tf.tensor_scatter_nd_update(
-                        div_K,
-                        indices=[[d, i, j]],
-                        updates=[grad_component[d]]
-                    )
+        # ============================================================================
+        # EINSUM 3: Vector-Tensor dot product for gradient
+        # ============================================================================
+        # Mathematical Formula:
+        #   A_T_diff_d_{i,j} = ∑_k [A^T]_{d,k} × diff_{k,i,j}
+        #                    = [A^T]_d · (x_i - x_j)
+        #
+        # This computes the d-th component of A^T × (x_i - x_j) for all pairs
+        #
+        # Input shapes:
+        #   A_T_row_d[:, 0]: (dim,)  - d-th row of A^T
+        #   diff: (dim, np_particles, np_particles)
+        #
+        # Output shape:
+        #   A_T_diff_d: (np_particles, np_particles)
+        #
+        # Einstein notation: 'k,kij->ij'
+        #   - 'k': vector has index k ∈ [0, dim-1]
+        #   - 'kij': tensor has indices (k, i, j)
+        #   - Shared index 'k' is summed over (dot product)
+        #   - Result 'ij': scalar for each particle pair
+        #
+        # Example (dim=2, np_particles=3, d=0):
+        #   A_T_row_d = [a00, a10]  (first row of A^T = first column of A)
+        #   
+        #   A_T_diff_d[1,2] = a00×diff[0,1,2] + a10×diff[1,1,2]
+        #                   = [a00, a10] · [(x1-x2)_0, (x1-x2)_1]
+        #                   = first component of A^T(x1-x2)
+        #
+        # This is the d-th element of the gradient direction before scaling by K
+        #
+        A_T_diff_d = tf.einsum('k,kij->ij', A_T_row_d[:, 0], diff)  # (np_particles, np_particles)
 
-        return K_matrix, div_K
+        # tf.einsum is more efficiency than div_K[d, i, j] = -sum_k A^T[d, k] * (x_i[k] - x_j[k]) * K[i, j]
+        # div_K = tf.zeros((self.dim, self.np_particles, self.np_particles), dtype=self.dtype)
+
+        # A_T = tf.transpose(A)
+        # for i in range(self.np_particles):
+        #     for j in range(self.np_particles):
+        #         diff_vec = pseudo_X[:, i] - pseudo_X[:, j]  # (dim,)
+        #         # A^T @ diff_vec gives (dim,) vector
+        #         grad_component = -tf.linalg.matvec(A_T, diff_vec) * K_matrix[i, j]
+
+        #         for d in range(self.dim):
+        #             div_K = tf.tensor_scatter_nd_update(
+        #                 div_K,
+        #                 indices=[[d, i, j]],
+        #                 updates=[grad_component[d]]
+        #             )
+
+        # Multiply by -K: grad_K[i, j] = -A_T_diff_d[i, j] * K[i, j]
+        grad_K = -A_T_diff_d * K  # (np_particles, np_particles)
+
+        return K, grad_K
     
     def adaptive_pseudo_step(
         self,
@@ -591,26 +717,18 @@ class ParticleFlowFilter:
 
             elif self.kernel_type == 'scalar':
                 # Scalar kernel (Eq. 16-19)
-                K_scalar, div_K_scalar = self.compute_scalar_kernel_and_divergence(pseudo_X, B)
-
-                # For each particle i, compute the flow
-                # f_s(x_i) = (1/N_p) * sum_j [K(x_j, x_i) * grad_log_post(x_j) + div_K(x_j, x_i)]
                 grad_KL_list = []
-                for i in range(self.np_particles):
-                    # Kernel term: sum over j of K[j, i] * grad_log_post[:, j]
-                    kernel_term = tf.reduce_sum(
-                        K_scalar[:, i:i+1] * grad_log_post,  # (np_particles, 1) * (dim, np_particles)
-                        axis=1,
-                        keepdims=True
-                    )  # (dim, 1)
-
-                    # Divergence term: sum over j of div_K[:, j, i]
-                    div_term = tf.reduce_sum(div_K_scalar[:, :, i], axis=1, keepdims=True)  # (dim, 1)
-
-                    grad_KL_i = (kernel_term + div_term) / self.np_particles
-                    grad_KL_list.append(grad_KL_i)
-
-                grad_KL = tf.concat(grad_KL_list, axis=1)  # (dim, np_particles)
+                for d in range(self.dim):
+                    K_d, grad_K_d = self.compute_scalar_kernel_and_divergence(pseudo_X, d, B)
+                    # K_d is same for all dimensions d (scalar kernel property)
+                    # For dimension d: sum_j [K(x_i, x_j) * grad_log_post[d, j] + grad_K_d[i, j]]
+                    # This is the same as before, just using the scalar kernel for simplicity
+                    grad_KL_d = (
+                        tf.reduce_sum(K_d * grad_log_post[d:d+1, :], axis=1, keepdims=True) +
+                        tf.reduce_sum(grad_K_d, axis=1, keepdims=True)
+                    ) / self.np_particles
+                    grad_KL_list.append(tf.transpose(grad_KL_d))
+                grad_KL = tf.concat(grad_KL_list, axis=0)
             
             # Record gradient norm
             norm_value = tf.sqrt(tf.reduce_sum(grad_KL**2) / (self.dim * self.np_particles))
