@@ -123,6 +123,10 @@ class ParticleFlowFilter:
 
         self.learning_rate_factor = learning_rate_factor
 
+        # Storage for prior and posterior particles at each observation time (for visualization and analysis)
+        self.prior_particles = []
+        self.posterior_particles = []
+
     def compute_prior_covariance(
         self, 
         particles: tf.Tensor
@@ -317,7 +321,7 @@ class ParticleFlowFilter:
         K = tf.exp(-0.5 * diff_matrix**2 / (B[d, d] * self.alpha))
 
         # Kernel gradient
-        grad_K = -K / (B[d, d] * self.alpha) * (-diff_matrix)
+        grad_K = -K / (B[d, d] * self.alpha) * diff_matrix
 
         return K, grad_K
 
@@ -358,7 +362,11 @@ class ParticleFlowFilter:
             Divergence component d where grad_K[i,j] = [∇_{x_i} · K(x_i, x_j)]_d
         """
         # Compute A = (α * B)^(-1)
-        A = tf.linalg.inv(self.alpha * B)
+        try:
+            A = tf.linalg.inv(self.alpha * B)
+        except:
+            A = self.regularized_inverse(self.alpha * B, cond_num=-8)
+        # A = tf.linalg.inv(self.alpha * B)
 
         # Vectorized computation of all pairwise kernel values
         # Shape: (dim, np_particles, 1) - (dim, 1, np_particles) = (dim, np_particles, np_particles)
@@ -656,6 +664,9 @@ class ParticleFlowFilter:
         # Get current particles
         X_tmp = X_list[t+1]
         particles = X_tmp
+
+        # Store prior particles for this observation time
+        self.prior_particles.append(tf.identity(particles))
         
         # Compute prior covariance
         B, X_mean = self.compute_prior_covariance(particles)
@@ -666,7 +677,11 @@ class ParticleFlowFilter:
         C = C * mask
         
         # Inverse covariances
-        C_inv = tf.linalg.inv(C)
+        try:
+            C_inv = tf.linalg.inv(C)
+        except:
+            C_inv = self.regularized_inverse(C, cond_num=-8)
+        # C_inv = tf.linalg.inv(C)
         B = C * self.np_particles
         B_inv = C_inv / self.np_particles
         
@@ -754,9 +769,60 @@ class ParticleFlowFilter:
         
         if verbose:
             print(f"  PFF completed in {s} iterations")
-        
+
+        # Store posterior particles for this observation time
+        self.posterior_particles.append(tf.identity(pseudo_X))
+
         return pseudo_X, s
     
+    def regularized_inverse(self, A: tf.Tensor, cond_num: float) -> tf.Tensor:
+        """
+        Compute a numerically stable inverse of a matrix using SVD with
+        condition-number-based truncation.
+
+        This is a regularized (truncated) inverse, NOT a plain matrix inverse.
+
+        Parameters
+        ----------
+        A : tf.Tensor
+            Input matrix of shape (m, n)
+        cond_num : float
+            Condition number exponent.
+            Singular values smaller than:
+                10**cond_num * max(singular_value)
+            are set to zero.
+
+        Returns
+        -------
+        A_inv : tf.Tensor
+            Regularized inverse of A
+        """
+
+        # SVD: A = U diag(S) V^T
+        s, u, v = tf.linalg.svd(A, full_matrices=False)
+
+        # Threshold for truncation
+        cond_num = tf.cast(cond_num, s.dtype)
+
+        ten = tf.constant(10.0, dtype=s.dtype)
+        
+        s_max = tf.reduce_max(s)
+        threshold = tf.pow(ten, cond_num) * s_max
+        # Invert singular values safely
+        s_inv = tf.where(
+            s < threshold,
+            tf.zeros_like(s),
+            tf.math.reciprocal(s)
+        )
+
+        # Reconstruct inverse: V diag(S^-1) U^T
+        A_inv = tf.matmul(
+            v,
+            tf.matmul(tf.linalg.diag(s_inv), u, transpose_b=True)
+        )
+
+        return A_inv
+
     def run(
         self,
         X_list: list,
