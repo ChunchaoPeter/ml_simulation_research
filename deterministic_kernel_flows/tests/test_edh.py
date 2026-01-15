@@ -22,7 +22,6 @@ class TestEDHUnit:
     def test_initialization(self, acoustic_system_simple):
         """Test EDH initialization with correct dimensions."""
         system = acoustic_system_simple
-        model_params = system['model_params']
 
         edh = EDHFilter(
             observation_jacobian=system['observation_jacobian'],
