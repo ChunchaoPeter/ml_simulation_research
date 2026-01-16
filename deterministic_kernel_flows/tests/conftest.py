@@ -15,17 +15,13 @@ from acoustic_function import (
     state_transition,
     observation_model,
     observation_model_general,
-    compute_observation_jacobian,
-    simulate_trajectory
+    compute_observation_jacobian
 )
 
 from utils_pff_l96_rk4 import (
     L96_RK4,
-    H_linear,
     H_linear_adjoint,
-    generate_Hx_si,
-    generate_observations,
-    generate_L96_trajectory
+    generate_Hx_si
 )
 
 # Enable eager execution for coverage testing
@@ -210,67 +206,6 @@ def ekf_for_acoustic():
 
 
 @pytest.fixture
-def l96_system():
-    """
-    Lorenz 96 dynamical system for PFF testing.
-
-    Returns a dictionary with:
-        - dim: State dimension
-        - dt: Time step
-        - F: Forcing parameter
-        - nx: Full model dimension
-        - obs_interval: Observation interval
-        - dim_interval: Spatial observation density
-        - R: Observation error covariance
-        - Q: Process noise covariance
-        - model_step: Function to advance model one timestep
-        - generate_Hx_si_fn: Observation operator function
-        - H_linear_adjoint_fn: Adjoint of observation operator
-    """
-    # Model parameters
-    dim = 40
-    dt = 0.025
-    F = 8.0
-    nx = 40
-    obs_interval = 4
-    dim_interval = 2
-
-    # Observation error covariance
-    ny_obs = len(tf.range(3, nx, dim_interval, dtype=tf.int32))
-    R = tf.eye(ny_obs, dtype=tf.float32) * 1.0
-
-    # Process noise (for ensemble generation)
-    Q = tf.eye(dim, dtype=tf.float32) * 0.1
-
-    # Model step function
-    def model_step(X):
-        return L96_RK4(X, dt, F)
-
-    # Observation operator
-    def generate_Hx_si_fn(X):
-        return generate_Hx_si(X, dim_interval, nx)
-
-    # Adjoint
-    def H_linear_adjoint_fn(X):
-        return H_linear_adjoint(X)
-
-    return {
-        'dim': dim,
-        'dt': dt,
-        'F': F,
-        'nx': nx,
-        'obs_interval': obs_interval,
-        'dim_interval': dim_interval,
-        'R': R,
-        'Q': Q,
-        'ny_obs': ny_obs,
-        'model_step': model_step,
-        'generate_Hx_si_fn': generate_Hx_si_fn,
-        'H_linear_adjoint_fn': H_linear_adjoint_fn
-    }
-
-
-@pytest.fixture
 def l96_system_simple():
     """
     Simplified Lorenz 96 system with smaller dimension for faster testing.
@@ -297,9 +232,9 @@ def l96_system_simple():
     def model_step(X):
         return L96_RK4(X, dt, F)
 
-    # Observation operator
-    def generate_Hx_si_fn(X):
-        return generate_Hx_si(X, dim_interval, nx)
+    # Observation operator (takes 3 arguments to match PFF interface)
+    def generate_Hx_si_fn(X, dim_interval_arg, nx_arg):
+        return generate_Hx_si(X, dim_interval_arg, nx_arg)
 
     # Adjoint
     def H_linear_adjoint_fn(X):
