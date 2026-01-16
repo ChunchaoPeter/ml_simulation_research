@@ -64,19 +64,3 @@ pytest tests/test_edh.py::TestEDHUnit::test_initialization -v
 pytest tests/test_pff.py::TestPFFUnit::test_initialization -v
 ```
 
-### Coverage Reports
-
-```bash
-# Run with coverage (all modules)
-pytest tests/ --cov=. --cov-report=term-missing
-
-# Run with coverage (specific modules)
-pytest tests/test_edh.py --cov=edh --cov-report=term
-pytest tests/test_pff.py --cov=pff --cov-report=term
-pytest tests/test_pfpf_edh.py --cov=pfpf_edh --cov-report=term
-pytest tests/test_pfpf_ledh.py --cov=pfpf_ledh --cov-report=term
-
-# Generate HTML coverage report
-pytest tests/ --cov=. --cov-report=html
-open htmlcov/index.html  # macOS
-```
