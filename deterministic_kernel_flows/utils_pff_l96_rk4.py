@@ -599,3 +599,45 @@ def plot_gradient_and_arrow_pff(ax, x_point, z_point, arrows, title,
     ax.set_aspect('equal')
     ax.spines['top'].set_visible(False)
     ax.spines['right'].set_visible(False)
+
+
+def plot_marginal_distribution(ax, idx_unobs, idx_obs, prior_particles, posterior_particles, 
+                                truth_val, title, kernel_name):
+    """
+    Plot 2D marginal distribution for x_19 and x_20.
+    """
+    # Extract relevant dimensions
+    prior_x19 = prior_particles[idx_unobs, :].numpy()
+    prior_x20 = prior_particles[idx_obs, :].numpy()
+    
+    post_x19 = posterior_particles[idx_unobs, :].numpy()
+    post_x20 = posterior_particles[idx_obs, :].numpy()
+    
+    # Plot prior particles
+    ax.scatter(prior_x19, prior_x20, s=100, c='black', alpha=0.6, 
+               marker='o', label='Prior', zorder=3)
+    
+    # Plot posterior particles
+    ax.scatter(post_x19, post_x20, s=100, c='red', alpha=0.7,
+               marker='o', label='Posterior', zorder=4)
+    
+    # Plot truth
+    ax.scatter(truth_val[idx_unobs], truth_val[idx_obs], s=300, 
+               c='green', marker='*', edgecolors='black', linewidths=1.5,
+               label='Truth', zorder=5)
+    
+    # Compute spread statistics
+    post_std_x19 = np.std(post_x19)
+    post_std_x20 = np.std(post_x20)
+    
+    ax.set_xlabel('$x_{19}$ (unobserved)', fontsize=14, fontweight='bold')
+    ax.set_ylabel('$x_{20}$ (observed)', fontsize=14, fontweight='bold')
+    ax.set_title(f'{title}\n({kernel_name})', fontsize=14, fontweight='bold')
+    ax.legend(loc='upper right', fontsize=11)
+    ax.grid(True, alpha=0.3)
+    
+    # Add text with statistics
+    textstr = f'Posterior spread:\n$\sigma_{{19}}$ = {post_std_x19:.3f}\n$\sigma_{{20}}$ = {post_std_x20:.3f}'
+    props = dict(boxstyle='round', facecolor='wheat', alpha=0.5)
+    ax.text(0.05, 0.95, textstr, transform=ax.transAxes, fontsize=10,
+            verticalalignment='top', bbox=props)
