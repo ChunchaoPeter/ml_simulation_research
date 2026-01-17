@@ -400,3 +400,201 @@ def generate_Hx_si(pseudo_Xs, dim_interval, nx=40):
     Hx_si = H_linear(Xt_dim) 
     
     return Hx_si
+
+def scalar_kernel(x: tf.Tensor, z: tf.Tensor, A: tf.Tensor) -> tf.Tensor:
+    """
+    Compute the scalar kernel K(x, z) as defined in Equation (17).
+    
+    K(x, z) = exp(-1/2 * (x - z)^T * A * (x - z))
+    
+    Parameters:
+    -----------
+    x : tf.Tensor
+        First input vector of shape (n_x, 1)
+    z : tf.Tensor
+        Second input vector of shape (n_x, 1)
+    A : tf.Tensor
+        Matrix that defines the distance between particles in space, shape (n_x, n_x)
+    
+    Returns:
+    --------
+    tf.Tensor
+        The scalar kernel value K(x, z)
+    """
+    diff = x - z
+    exponent = -0.5 * tf.matmul(tf.matmul(tf.transpose(diff), A), diff)[0, 0]
+    return tf.exp(exponent)
+
+def scalar_kernel_gradient(x: tf.Tensor, z: tf.Tensor, A: tf.Tensor) -> tf.Tensor:
+    """
+    Compute the gradient of the scalar kernel with respect to x as in Equation (19).
+    
+    ∇_x · K(x, z) = -A^T(x - z)K(x, z)
+    
+    Parameters:
+    -----------
+    x : tf.Tensor
+        First input vector of shape (n_x, 1)
+    z : tf.Tensor
+        Second input vector of shape (n_x, 1)
+    A : tf.Tensor
+        Matrix that defines the distance, shape (n_x, n_x)
+    
+    Returns:
+    --------
+    tf.Tensor
+        Gradient vector of shape (n_x, 1)
+    """
+    K_val = scalar_kernel(x, z, A)
+    diff = x - z
+    gradient = -tf.matmul(tf.transpose(A), diff) * K_val
+    return gradient
+
+def matrix_valued_kernel(x: tf.Tensor, z: tf.Tensor, 
+                         alpha: float, sigma: list) -> tf.Tensor:
+    """
+    Compute the matrix-valued kernel K(x, z) as defined in Equations (20) and (21).
+    
+    K(x, z) = diag([K_(1)(x, z), K_(2)(x, z), ..., K_(n_x)(x, z)])
+    
+    where K_(a)(x, z) = exp(-1/2 * (x_(a) - z_(a))^2 / (alpha * sigma_(a)^2))
+    
+    Parameters:
+    -----------
+    x : tf.Tensor
+        First input vector of shape (n_x, 1)
+    z : tf.Tensor
+        Second input vector of shape (n_x, 1)
+    alpha : float
+        Scaling parameter
+    sigma : list
+        Standard deviation list of length n_x
+    
+    Returns:
+    --------
+    tf.Tensor
+        The matrix-valued kernel K(x, z) of shape (n_x, n_x) as a diagonal matrix
+    """
+    sigma_tensor = tf.constant(sigma, dtype=tf.float32)
+    sigma_tensor = tf.reshape(sigma_tensor, (-1, 1))
+    
+    diff_squared = tf.square(x - z)
+    exponent = -0.5 * diff_squared / (alpha * tf.square(sigma_tensor))
+    diagonal_elements = tf.squeeze(tf.exp(exponent))
+    K = tf.linalg.diag(diagonal_elements)
+    return K
+
+
+def matrix_valued_kernel_gradient(x_s: tf.Tensor, x: tf.Tensor,
+                                  alpha: float, sigma: list) -> tf.Tensor:
+    """
+    Compute the gradient of the matrix-valued kernel with respect to x_s 
+    as in Equation (23).
+    
+    ∂/∂x_s K_(a)(x_s, x) = -(x_s,(a) - x_(a))/(alpha * sigma_(a)^2) * K_(a)(x_s,(a), x_(a))
+    
+    Parameters:
+    -----------
+    x_s : tf.Tensor
+        Source point vector of shape (n_x, 1)
+    x : tf.Tensor
+        Target point vector of shape (n_x, 1)
+    alpha : float
+        Scaling parameter
+    sigma : list
+        Standard deviation list of length n_x
+    
+    Returns:
+    --------
+    tf.Tensor
+        Gradient vector of shape (n_x, 1)
+    """
+    sigma_tensor = tf.constant(sigma, dtype=tf.float32)
+    sigma_tensor = tf.reshape(sigma_tensor, (-1, 1))
+    
+    diff = x_s - x
+    diff_squared = tf.square(diff)
+    exponent = -0.5 * diff_squared / (alpha * tf.square(sigma_tensor))
+    K_a = tf.exp(exponent)
+    gradient = -diff / (alpha * tf.square(sigma_tensor)) * K_a
+    return gradient
+
+def plot_gradient_and_arrow_pff(ax, x_point, z_point, arrows, title, 
+                                is_matrix_valued=True, arrow_scale=1.0, point_size=80):
+    """
+    Plot visualization with ellipses and directional arrows.
+    
+    Args:
+        ax: matplotlib axis object
+        x_point: starting point coordinates (2x1 array)
+        z_point: ending point coordinates (2x1 array)
+        arrows: arrow direction magnitudes (2x1 array)
+        title: plot title
+        is_matrix_valued: if True, plot matrix-valued; if False, plot scalar
+        arrow_scale: scaling factor for arrow lengths
+        point_size: size of scatter plot points
+    """
+    
+    # Common styling parameters
+    ellipse_size = 1.0
+    ellipse_alpha_base = 0.3
+    ellipse_alpha_dark = 0.5
+    arrow_head_width = 0.15
+    arrow_head_length = 0.1
+    arrow_linewidth = 2
+    
+    # Helper function to draw arrows
+    def draw_arrow(start_point, dx, dy):
+        ax.arrow(start_point[0, 0], start_point[1, 0], 
+                dx, dy,
+                head_width=arrow_head_width, 
+                head_length=arrow_head_length, 
+                fc='black', ec='black', 
+                linewidth=arrow_linewidth, 
+                zorder=6)
+    
+    # Helper function to create ellipse
+    def create_ellipse(center, alpha):
+        return Ellipse((center[0, 0], center[1, 0]), 
+                      width=ellipse_size, 
+                      height=ellipse_size, 
+                      facecolor='gray', 
+                      alpha=alpha, 
+                      zorder=1 if alpha == ellipse_alpha_base else 2)
+    
+    # Plot reference line and data points
+    ax.axhline(y=x_point[1, 0], color='k', linestyle=':', linewidth=1.5)
+    ax.scatter(x_point[0, 0], x_point[1, 0], c='black', s=point_size, zorder=5)
+    ax.scatter(z_point[0, 0], z_point[1, 0], c='black', s=point_size, zorder=5)
+    
+    if is_matrix_valued:
+        # Matrix-valued: orthogonal arrows from both points
+        ax.add_patch(create_ellipse(x_point, ellipse_alpha_base))
+        draw_arrow(x_point, -arrows[0, 0] * arrow_scale, 0)  # Left
+        draw_arrow(x_point, 0, -arrows[1, 0] * arrow_scale)  # Down
+        
+        ax.add_patch(create_ellipse(z_point, ellipse_alpha_dark))
+        draw_arrow(z_point, arrows[0, 0] * arrow_scale, 0)   # Right
+        draw_arrow(z_point, 0, arrows[1, 0] * arrow_scale)   # Up
+        
+    else:
+        # Scalar: diagonal arrows from both points (opposite directions)
+        ax.add_patch(create_ellipse(x_point, ellipse_alpha_base))
+        draw_arrow(x_point, 
+                  -arrows[0, 0] * arrow_scale, 
+                  -arrows[1, 0] * arrow_scale)
+        
+        ax.add_patch(create_ellipse(z_point, ellipse_alpha_dark))
+        draw_arrow(z_point, 
+                  arrows[0, 0] * arrow_scale, 
+                  arrows[1, 0] * arrow_scale)
+    
+    # Format plot
+    ax.set_xlim(0, 4)
+    ax.set_ylim(0, 3.5)
+    ax.set_xlabel('$x_1$', fontsize=16)
+    ax.set_ylabel('$x_2$', fontsize=16)
+    ax.set_title(title, fontsize=18, pad=10)
+    ax.set_aspect('equal')
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
