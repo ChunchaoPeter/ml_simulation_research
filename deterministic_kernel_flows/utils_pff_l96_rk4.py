@@ -1,6 +1,7 @@
 import tensorflow as tf
 import numpy as np
 from typing import Callable
+from matplotlib.patches import Ellipse
 
 def L96_RK4(X_in: tf.Tensor, dt: float, F: float) -> tf.Tensor:
     """
