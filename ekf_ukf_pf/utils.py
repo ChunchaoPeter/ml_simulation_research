@@ -7,6 +7,8 @@ This module provides common functions used across PF, EKF, and UKF demos:
 - Performance metrics computation
 - Plotting utilities
 """
+import sys
+sys.path.append("/Users/chunchaoma/Desktop/ml_simulation_research")
 
 import tensorflow as tf
 import tensorflow_probability as tfp
@@ -43,7 +45,7 @@ def create_model(dt: float = 1.0,
     Returns:
         RangeBearingModel instance
     """
-    from range_bearing_model import RangeBearingModel
+    from ekf_ukf_pf.range_bearing_model import RangeBearingModel
 
     return RangeBearingModel(
         dt=dt,
