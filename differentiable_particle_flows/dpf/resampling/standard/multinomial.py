@@ -182,7 +182,8 @@ class MultinomialResampler(ResamplerBase):
         flags_2d = flags[:, tf.newaxis]
         new_log_weights = tf.where(flags_2d, uniform_log_weights,
                                     state.log_weights)
-
+        # return a new state 
+        # It creates a new instance, copying all fields from state, but replacing only the ones specified.
         return attr.evolve(
             state,
             particles=new_particles,

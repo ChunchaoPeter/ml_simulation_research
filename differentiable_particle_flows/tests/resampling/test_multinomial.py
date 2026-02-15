@@ -79,35 +79,67 @@ class TestMultinomialResampler:
             new_state.log_weights[1].numpy(), state.log_weights[1].numpy()
         )
 
-    # def test_high_weight_particle_duplicated(self):
-    #     """Particle with w~1 should appear in most resampled slots."""
-    #     resampler = MultinomialResampler()
-    #     state = _make_state_degenerate()
-    #     flags = tf.constant([True, True])
-    #     new_state = resampler.apply(state, flags)
-    #     # Particle 0 has w~1, so most resampled particles should be particle 0
-    #     particle_0 = state.particles[:, 0:1, :].numpy()  # [batch, 1, D]
-    #     resampled = new_state.particles.numpy()           # [batch, N, D]
-    #     for b in range(BATCH):
-    #         matches = np.all(
-    #             np.isclose(resampled[b], particle_0[b], atol=1e-12), axis=-1
-    #         )
-    #         # With w~1, nearly all N particles should be copies of particle 0
-    #         assert np.sum(matches) >= N - 2
-
-    # def test_returns_state(self):
-    #     resampler = MultinomialResampler()
-    #     state = _make_state_uniform()
-    #     flags = tf.constant([True, True])
-    #     new_state = resampler.apply(state, flags)
-    #     assert isinstance(new_state, State)
+    def test_returns_state(self):
+        resampler = MultinomialResampler()
+        state = _make_state_uniform()
+        flags = tf.constant([True, True])
+        new_state = resampler.apply(state, flags)
+        assert isinstance(new_state, State)
 
 
-    # def test_ancestor_indices_set(self):
-    #     """After resampling, ancestor_indices should be populated."""
-    #     resampler = MultinomialResampler()
-    #     state = _make_state_uniform()
-    #     flags = tf.constant([True, True])
-    #     new_state = resampler.apply(state, flags)
-    #     assert new_state.ancestor_indices is not None
-    #     assert new_state.ancestor_indices.shape == (BATCH, N)
+    def test_ancestor_indices_set(self):
+        """After resampling, ancestor_indices should be populated."""
+        resampler = MultinomialResampler()
+        state = _make_state_uniform()
+        flags = tf.constant([True, True])
+        new_state = resampler.apply(state, flags)
+        assert new_state.ancestor_indices is not None
+        assert new_state.ancestor_indices.shape == (BATCH, N)
+
+    def test_multinomial_sampling_frequencies(self):
+        """Empirical selection frequencies should match the weights.
+
+        Multinomial resampling satisfies E[N_k] = N * w_k, where N_k is the
+        number of times particle k is selected. Over R independent resampling
+        rounds, the empirical frequency of selecting particle k should converge
+        to w_k by the law of large numbers.
+
+        We set up 5 particles with known weights [0.4, 0.3, 0.15, 0.1, 0.05],
+        run R=500 resampling rounds (each producing N=5 ancestor indices), and
+        check that the empirical proportions are within tolerance of the true
+        weights.
+        """
+        n = 5
+        target_weights = np.array([0.4, 0.3, 0.15, 0.1, 0.05])
+        log_weights = tf.constant(
+            np.log(target_weights)[np.newaxis, :],  # [1, 5]
+            dtype=tf.float64,
+        )
+        particles = tf.constant(
+            np.arange(n)[np.newaxis, :, np.newaxis],  # [1, 5, 1]
+            dtype=tf.float64,
+        )
+        state = State(particles=particles, log_weights=log_weights)
+        flags = tf.constant([True])
+
+        R = 500
+        counts = np.zeros(n)
+        resampler = MultinomialResampler(seed=42)
+        for _ in range(R):
+            new_state = resampler.apply(state, flags)
+            indices = new_state.ancestor_indices.numpy()[0]  # [N]
+            for idx in indices:
+                counts[idx] += 1
+
+        # Empirical frequencies over R*N total draws
+        empirical_freq = counts / counts.sum()
+
+        # With R=500 rounds and N=5, we have 2500 total samples.
+        # Allow tolerance of 0.05 for each weight bucket.
+        np.testing.assert_allclose(
+            empirical_freq, target_weights, atol=0.05,
+            err_msg=(
+                f"Empirical frequencies {empirical_freq} do not match "
+                f"target weights {target_weights}"
+            ),
+        )
