@@ -1,5 +1,5 @@
 """
-Shared constants for the standard particle filter.
+Shared constants for particle filter.
 """
 
 import tensorflow as tf
