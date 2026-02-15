@@ -236,10 +236,10 @@ def test_state_fields_in_tf_function():
 class TestStateSeries:
     def test_write_and_stack(self):
         T = 3
-        series = StateSeries(T)
+        series = StateSeries.create(T)
         for t in range(T):
             state = _make_state()
-            series.write(t, state)
+            series = series.write(t, state)
         result = series.stack()
 
         assert 'particles' in result
@@ -252,24 +252,44 @@ class TestStateSeries:
     def test_stack_returns_all_keys(self):
         """stack() must return exactly the three expected keys."""
         T = 2
-        series = StateSeries(T)
+        series = StateSeries.create(T)
         for t in range(T):
-            series.write(t, _make_state())
+            series = series.write(t, _make_state())
         result = series.stack()
         assert set(result.keys()) == {'particles', 'log_weights', 'log_likelihoods'}
 
-    def test_series_preserves_values(self):
-        """Values written at each step should be recoverable after stack."""
+    def test_different_values_at_different_times(self):
+        """Each time step should store distinct particle/weight values."""
         T = 3
-        series = StateSeries(T)
+        series = StateSeries.create(T)
+        # Create states with deterministic, distinguishable values
         states = []
         for t in range(T):
-            s = _make_state()
+            particles = tf.fill([BATCH, N, D], tf.constant(float(t), dtype=tf.float64))
+            log_weights = tf.fill([BATCH, N], tf.constant(-float(t + 1), dtype=tf.float64))
+            s = State(particles=particles, log_weights=log_weights)
             states.append(s)
-            series.write(t, s)
+            series = series.write(t, s)
+
         result = series.stack()
+        # Verify each time step has its own distinct values
         for t in range(T):
             np.testing.assert_allclose(
-                result['particles'][t].numpy(),
-                states[t].particles.numpy(),
+                result['particles'][t].numpy(), float(t)
             )
+            np.testing.assert_allclose(
+                result['log_weights'][t].numpy(), -float(t + 1)
+            )
+        # Verify time steps differ from each other
+        assert not np.allclose(
+            result['particles'][0].numpy(), result['particles'][1].numpy()
+        )
+        assert not np.allclose(
+            result['particles'][1].numpy(), result['particles'][2].numpy()
+        )
+
+    def test_frozen(self):
+        """StateSeries should be immutable like State."""
+        series = StateSeries.create(2)
+        with pytest.raises(attr.exceptions.FrozenInstanceError):
+            series._particles_ta = None

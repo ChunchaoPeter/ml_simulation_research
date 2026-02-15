@@ -116,9 +116,15 @@ class State:
 # StateSeries
 # ---------------------------------------------------------------------------
 
+@attr.s(frozen=True)
 class StateSeries:
     """
-    Accumulates State objects across time steps using tf.TensorArray.
+    Immutable accumulator for State objects across time steps.
+
+    Uses tf.TensorArray internally. Immutable like State — write() returns
+    a NEW StateSeries rather than mutating self. This follows the functional
+    pattern that tf.TensorArray itself uses (ta.write() returns a new ta)
+    and is safe for @tf.function tracing.
 
     Used by SMC.__call__ when return_series=True. Collects particles,
     log_weights, and log_likelihoods at each time step t = 0, ..., T-1,
@@ -129,29 +135,51 @@ class StateSeries:
         _log_weights_ta: TensorArray for log_weights across time.
         _log_likelihoods_ta: TensorArray for log_likelihoods across time.
     """
+    _particles_ta = attr.ib()
+    _log_weights_ta = attr.ib()
+    _log_likelihoods_ta = attr.ib()
 
-    def __init__(self, max_time_steps: int, dtype=DEFAULT_DTYPE):
-        """
+    @classmethod
+    def create(cls, max_time_steps: int, dtype=DEFAULT_DTYPE) -> 'StateSeries':
+        """Create an empty StateSeries with pre-allocated TensorArrays.
+
         Args:
             max_time_steps: Maximum number of time steps (T).
             dtype: TensorFlow dtype for arrays.
+
+        Returns:
+            New empty StateSeries.
         """
-        self._max_T = max_time_steps
-        self._particles_ta = tf.TensorArray(dtype=dtype, size=max_time_steps,
-                                             dynamic_size=False)
-        self._log_weights_ta = tf.TensorArray(dtype=dtype, size=max_time_steps,
-                                               dynamic_size=False)
-        self._log_likelihoods_ta = tf.TensorArray(dtype=dtype, size=max_time_steps,
-                                                    dynamic_size=False)
+        return cls(
+            particles_ta=tf.TensorArray(dtype=dtype, size=max_time_steps,
+                                        dynamic_size=False),
+            log_weights_ta=tf.TensorArray(dtype=dtype, size=max_time_steps,
+                                          dynamic_size=False),
+            log_likelihoods_ta=tf.TensorArray(dtype=dtype, size=max_time_steps,
+                                              dynamic_size=False),
+        )
 
     def write(self, t: int, state: State) -> 'StateSeries':
-        """Write a state at time step t. Returns self for chaining."""
-        self._particles_ta = self._particles_ta.write(t, state.particles)
-        self._log_weights_ta = self._log_weights_ta.write(t, state.log_weights)
-        self._log_likelihoods_ta = self._log_likelihoods_ta.write(
-            t, state.log_likelihoods
+        """Write a state at time step t.
+
+        Returns a NEW StateSeries (immutable — does not modify self).
+        This mirrors tf.TensorArray.write() which also returns a new array.
+
+        Args:
+            t: Time step index.
+            state: State to record.
+
+        Returns:
+            New StateSeries with the state written at position t.
+        """
+        return attr.evolve(
+            self,
+            particles_ta=self._particles_ta.write(t, state.particles),
+            log_weights_ta=self._log_weights_ta.write(t, state.log_weights),
+            log_likelihoods_ta=self._log_likelihoods_ta.write(
+                t, state.log_likelihoods
+            ),
         )
-        return self
 
     def stack(self):
         """Stack all time steps into tensors.
