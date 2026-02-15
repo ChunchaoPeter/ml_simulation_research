@@ -1,0 +1,1 @@
+from dpf.resampling.standard.multinomial import MultinomialResampler
