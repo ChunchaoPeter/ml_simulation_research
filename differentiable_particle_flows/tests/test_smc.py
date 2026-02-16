@@ -121,9 +121,16 @@ class TestFullRun:
         assert series['particles'].shape == (T, BATCH, N, D)
         assert series['log_weights'].shape == (T, BATCH, N)
         assert series['log_likelihoods'].shape == (T, BATCH)
-        assert series['particles'][-1] == final_state.particles
-        assert series['log_weights'][-1] == final_state.log_weights
-        assert series['log_likelihoods'][-1] == final_state.log_likelihoods
+        np.testing.assert_allclose(
+            series['particles'][-1].numpy(), final_state.particles.numpy()
+        )
+        np.testing.assert_allclose(
+            series['log_weights'][-1].numpy(), final_state.log_weights.numpy()
+        )
+        np.testing.assert_allclose(
+            series['log_likelihoods'][-1].numpy(),
+            final_state.log_likelihoods.numpy()
+        )
         """After the loop (step 11: end for), state.t should equal T."""
         assert final_state.t == T
 
