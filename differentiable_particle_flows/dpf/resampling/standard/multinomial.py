@@ -168,6 +168,15 @@ class MultinomialResampler(ResamplerBase):
         new_particles = tf.where(flags_expanded, resampled_particles,
                                   state.particles)
 
+        # Conditionally apply ancestor indices per batch element.
+        # When flags[b] = False, each particle is its own ancestor: identity
+        # [0, 1, ..., N-1].
+        identity_indices = tf.broadcast_to(
+            tf.range(n_particles)[tf.newaxis, :], [batch_size, n_particles]
+        )
+        flags_2d_idx = flags[:, tf.newaxis]  # [batch, 1]
+        indices = tf.where(flags_2d_idx, indices, identity_indices)
+
         # Step 6: Reset weights to uniform for resampled elements
         # After resampling, each selected particle represents an equal share
         # of the posterior, so we reset to uniform weights:

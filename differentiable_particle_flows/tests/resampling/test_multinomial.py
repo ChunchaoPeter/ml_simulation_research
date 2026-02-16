@@ -119,6 +119,32 @@ class TestMultinomialResampler:
         assert new_state.ancestor_indices is not None
         assert new_state.ancestor_indices.shape == (BATCH, N)
 
+    def test_ancestor_indices_identity_when_no_resampling(self):
+        """When flags=False, ancestor_indices should be identity [0, 1, ..., N-1]."""
+        resampler = MultinomialResampler()
+        state = _make_state_uniform()
+        flags = tf.constant([False, False])
+        new_state = resampler.apply(state, flags)
+        expected = np.broadcast_to(np.arange(N)[np.newaxis, :], (BATCH, N))
+        np.testing.assert_array_equal(
+            new_state.ancestor_indices.numpy(), expected
+        )
+
+    def test_ancestor_indices_mixed_flags(self):
+        """Batch 0 (no resample): identity indices. Batch 1 (resample): changed."""
+        resampler = MultinomialResampler()
+        state = _make_state_degenerate()
+        flags = tf.constant([False, True])
+        new_state = resampler.apply(state, flags)
+        # Batch 0: identity (no resampling, each particle is its own ancestor)
+        np.testing.assert_array_equal(
+            new_state.ancestor_indices.numpy()[0], np.arange(N)
+        )
+        # Batch 1: resampled (degenerate => all indices should be 0)
+        np.testing.assert_array_equal(
+            new_state.ancestor_indices.numpy()[1], np.zeros(N, dtype=np.int32)
+        )
+
     def test_multinomial_sampling_frequencies(self):
         """Empirical selection frequencies should match the weights.
 
