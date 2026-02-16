@@ -65,6 +65,7 @@ from dpf.proposal.base import ProposalModelBase
 from dpf.resampling.base import ResamplerBase
 from dpf.resampling.criterion import ResamplingCriterionBase
 
+# TODO: extend StateSeries to also store ancestor_indices, t, and ess
 
 class SMC(Module):
     """
