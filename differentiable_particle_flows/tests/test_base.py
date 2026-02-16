@@ -1,9 +1,47 @@
 """Tests for dpf/base.py: State, StateSeries, validators.
 
-Inspired by filterflow's test_base.py, which tests:
-- tf.function compatibility (no excessive retracing)
-- Input validation (scalars, wrong shapes)
-- StateSeries write/stack
+Tests the core data structures used throughout the particle filter:
+
+    State: Immutable (frozen attrs) dataclass holding the particle cloud at
+        one time step. Fields:
+        - particles:       [batch, n_particles, state_dim]   (3D)
+        - log_weights:     [batch, n_particles]              (2D)
+        - weights:         [batch, n_particles]              (derived via softmax)
+        - log_likelihoods: [batch]                           (1D, accumulated)
+        - ess:             [batch]                           (derived: 1/sum(w^2))
+        - ancestor_indices, t: optional metadata
+
+    StateSeries: Immutable TensorArray-based accumulator that records State
+        at each time step t=0..T-1, then stacks into time-indexed tensors.
+
+Test classes:
+    TestDim3Validator / TestDim2Validator / TestDim1Validator
+        - Unit tests for shape validators in isolation (accept valid, reject
+          wrong rank, allow None).
+
+    TestValidators
+        - Integration tests: validators fire correctly during State
+          construction (wrong-rank particles, log_weights, weights,
+          log_likelihoods all raise ValueError).
+
+    TestStateCreation
+        - Shapes, derived fields (weights, log_likelihoods, ess).
+        - Properties: batch_size, n_particles, state_dim.
+        - Weights sum to 1, ESS=N for uniform, ESS~1 for degenerate.
+        - Log-likelihoods initialize to 0.
+        - Optional fields (ancestor_indices, t) via attr.evolve.
+
+    TestStateImmutability
+        - Frozen: direct assignment raises FrozenInstanceError.
+        - attr.evolve creates a new State without mutating the original.
+
+    test_state_fields_in_tf_function
+        - State tensors work inside @tf.function (graph-mode compatibility).
+
+    TestStateSeries
+        - write/stack round-trip: correct shapes [T, batch, N, D].
+        - Distinct values at different time steps.
+        - Immutability: frozen attrs.
 """
 
 import pytest

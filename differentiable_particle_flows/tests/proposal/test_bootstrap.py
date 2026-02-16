@@ -1,4 +1,25 @@
-"""Tests for dpf/proposal/bootstrap.py: BootstrapProposal."""
+"""Tests for dpf/proposal/bootstrap.py: BootstrapProposal.
+
+Tests the bootstrap (prior) proposal:
+
+    q(x_t | x_{t-1}, y_t) = p(x_t | x_{t-1})   (ignores observation y_t)
+
+The bootstrap proposal is the simplest choice for particle filters (SIR/SIS).
+Since the proposal equals the transition prior, the importance weight update
+simplifies to:
+
+    w_t^i  proportional to  p(y_t | x_t^i)
+
+i.e., particles are weighted purely by the observation likelihood.
+
+Test class:
+    TestBootstrapProposal
+        - Shape preservation: propose() returns particles with same shape.
+        - Stochasticity: proposed particles differ from input (noise added
+          by the underlying transition model).
+        - Log-likelihood shape: loglikelihood() returns [batch, n_particles],
+          delegating to the transition model's log p(x_t | x_{t-1}).
+"""
 
 import tensorflow as tf
 import tensorflow_probability as tfp

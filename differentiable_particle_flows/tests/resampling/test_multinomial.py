@@ -1,4 +1,27 @@
-"""Tests for dpf/resampling/standard/multinomial.py: MultinomialResampler."""
+"""Tests for dpf/resampling/standard/multinomial.py: MultinomialResampler.
+
+Tests multinomial resampling:
+
+    For i = 1 to N:
+        Draw A^i ~ Categorical(w_t^1, ..., w_t^N)
+        Set X_t^i = X_t^{A^i}
+    Set w_t^i = 1/N  for all i
+
+Each particle is selected independently with probability proportional to
+its normalized weight. After resampling, weights are reset to uniform.
+
+Test class:
+    TestMultinomialResampler
+        - No-op when flags=False: particles and weights unchanged.
+        - Weight reset: after resampling, all log_weights = -log(N).
+        - Per-batch flags: only flagged batch elements are resampled;
+          unflagged elements keep original particles and weights.
+        - Ancestor indices: resampler populates ancestor_indices field
+          with shape [batch, n_particles].
+        - Statistical correctness: over R=500 rounds, empirical selection
+          frequencies converge to the true weights (law of large numbers).
+          Verified with known weights [0.4, 0.3, 0.15, 0.1, 0.05].
+"""
 
 import tensorflow as tf
 import numpy as np

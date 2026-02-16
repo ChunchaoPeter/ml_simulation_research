@@ -1,4 +1,37 @@
-"""Tests for dpf/observation/linear.py: LinearObservationModel."""
+"""Tests for dpf/observation/linear.py: LinearObservationModel.
+
+Tests the linear Gaussian observation model:
+
+    y_t = H @ x_t + v_t,    v_t ~ N(0, R)
+
+where H is the observation matrix and R = R_chol @ R_chol^T is the
+observation noise covariance.
+
+All tests use a general (non-square, non-identity) configuration:
+    H = [[1.0, 0.5, 0.0],     shape [2, 3]  (obs_dim=2, state_dim=3)
+         [0.0, 0.2, 0.8]]
+    R_chol = [[0.3, 0.0],     shape [2, 2]  (non-isotropic noise)
+              [0.1, 0.4]]
+
+Test classes:
+    TestGeneralObservationFunction
+        - Shape: h(x) = H @ x maps [batch, N, 3] -> [batch, N, 2].
+        - Correctness: verifies matvec against explicit matmul for a
+          single particle.
+        - Dimensionality: output dim (obs_dim=2) differs from input
+          dim (state_dim=3).
+
+    TestGeneralLoglikelihood
+        - Weight update: loglikelihood() modifies log_weights via
+              log w_t^i = log w_{t-1}^i + log p(y_t | x_t^i).
+        - Shape preservation: particles and log_weights shapes unchanged.
+        - Perfect observation: when y = H @ x exactly, log-weights increase
+          (positive log-likelihood added).
+        - Comparative: closer observations yield higher accumulated
+          log marginal likelihood than far observations.
+        - Analytical match: per-particle log p(y|x) = log N(y - Hx; 0, R),
+          verified against an independently constructed MVN distribution.
+"""
 
 import tensorflow as tf
 import tensorflow_probability as tfp

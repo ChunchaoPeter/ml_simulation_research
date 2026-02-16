@@ -1,4 +1,35 @@
-"""Tests for dpf/transition/linear_gaussian_state.py: LinearGaussianTransition."""
+"""Tests for dpf/transition/linear_gaussian_state.py: LinearGaussianTransition.
+
+Tests the linear Gaussian state transition model:
+
+    x_t = F @ x_{t-1} + w_t,    w_t ~ N(0, Q)
+
+where F is the state transition matrix and Q = Q_chol @ Q_chol^T is the
+process noise covariance.
+
+All tests use a general (non-identity) configuration to exercise the full
+matrix algebra:
+    F = [[0.9, 0.1], [0.0, 0.8]]     (2D coupled dynamics)
+    Q_chol = [[0.5, 0.0], [0.2, 0.3]] (non-isotropic, correlated noise)
+
+Test classes:
+    TestGeneralTransitionFunction
+        - Verifies transition_function computes f(x) = F @ x via matvec,
+          cross-checked against explicit matmul for a single particle.
+        - Confirms non-identity F produces output different from input.
+
+    TestGeneralSample
+        - Shape preservation: sample() returns [batch, n_particles, state_dim].
+        - Statistical correctness: over many draws, E[x_t | x_{t-1}] -> F @ x_{t-1}
+          by the law of large numbers (Monte Carlo test).
+
+    TestGeneralLoglikelihood
+        - Shape: log p(x_t | x_{t-1}) has shape [batch, n_particles].
+        - Optimality: log-density is maximized when proposed = F @ prior
+          (zero-residual case).
+        - Analytical match: log p(x_t | x_{t-1}) = log N(x_t - F x_{t-1}; 0, Q),
+          verified against an independently constructed MVN distribution.
+"""
 
 import tensorflow as tf
 import tensorflow_probability as tfp

@@ -1,4 +1,23 @@
-"""Tests for dpf/resampling/criterion.py: NeffCriterion."""
+"""Tests for dpf/resampling/criterion.py: NeffCriterion.
+
+Tests the ESS-based resampling criterion:
+
+    ESS_t = 1 / sum_i (w_t^i)^2
+
+Resampling is triggered when ESS_t < threshold_ratio * N.
+
+    - Uniform weights:    ESS = N (all particles equally useful) -> no resample.
+    - Degenerate weights: ESS ~ 1 (one particle dominates)       -> resample.
+
+Test class:
+    TestNeffCriterion
+        - Uniform weights (ESS=N) with threshold=0.5 -> no resampling.
+        - Degenerate weights (ESS~1) with threshold=0.5 -> resampling triggered.
+        - Per-batch independence: mixed batch (one uniform, one degenerate)
+          produces different flags per batch element.
+        - Custom threshold: threshold_ratio > 1.0 forces resampling even
+          for uniform weights.
+"""
 
 import tensorflow as tf
 import numpy as np
