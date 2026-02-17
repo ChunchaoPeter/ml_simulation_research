@@ -27,6 +27,7 @@ import tensorflow as tf
 import numpy as np
 from dpf.base import State
 from dpf.resampling.standard import MultinomialResampler
+from dpf.resampling.resampling_base import CdfInversionResamplerBase
 from dpf.constants import DEFAULT_SEED
 
 BATCH = 2
@@ -144,6 +145,11 @@ class TestMultinomialResampler:
         np.testing.assert_array_equal(
             new_state.ancestor_indices.numpy()[1], np.zeros(N, dtype=np.int32)
         )
+
+    def test_is_cdf_inversion_resampler(self):
+        """MultinomialResampler should be a subclass of CdfInversionResamplerBase."""
+        resampler = MultinomialResampler()
+        assert isinstance(resampler, CdfInversionResamplerBase)
 
     def test_multinomial_sampling_frequencies(self):
         """Empirical selection frequencies should match the weights.
