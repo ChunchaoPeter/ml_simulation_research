@@ -12,12 +12,12 @@ two hooks:
        How to compute post-resampling log weights.
 
 The template apply() method handles: CDF cumsum, sorted uniform spacings,
-searchsorted, gather with stop_gradient, conditional flags for particles
-and indices, weight computation via hook, softmax, ESS, and attr.evolve.
+searchsorted, gather, conditional flags for particles and indices, weight
+computation via hook, softmax, ESS, and attr.evolve.
 
-Note: This base class wraps particle gathering in stop_gradient, making it
-unsuitable for differentiable resamplers (e.g., SoftResampler) which need
-gradient flow through corrected weights.
+Gradients flow through gathered particle values (straight-through estimator),
+enabling backpropagation to upstream parameters (e.g., transition networks).
+The discrete index selection itself remains non-differentiable.
 """
 
 import abc
@@ -37,9 +37,9 @@ class CdfInversionResamplerBase(ResamplerBase, abc.ABC):
     - Which weights build the CDF (_get_cdf_weights)
     - How post-resampling weights are computed (_compute_new_log_weights)
 
-    This base class is designed for non-differentiable resamplers. It wraps
-    particle gathering in stop_gradient. Differentiable resamplers (e.g.,
-    SoftResampler) should inherit from ResamplerBase directly.
+    Gradients flow through gathered particle values, enabling
+    backpropagation through particle positions to upstream parameters.
+    The discrete index selection remains non-differentiable.
 
     Args:
         seed: Random seed for reproducibility. Default: DEFAULT_SEED.
@@ -92,7 +92,7 @@ class CdfInversionResamplerBase(ResamplerBase, abc.ABC):
             2. Build CDF via cumsum.
             3. Generate sorted uniform spacings.
             4. Invert CDF to find ancestor indices (searchsorted).
-            5. Gather particles at those indices (with stop_gradient).
+            5. Gather particles at those indices.
             6. Conditionally apply per batch element based on flags.
             7. Compute new log weights from subclass hook.
             8. Compute softmax weights, ESS, and return new State.
@@ -140,15 +140,17 @@ class CdfInversionResamplerBase(ResamplerBase, abc.ABC):
         indices = tf.searchsorted(cdf, spacings)             # [batch, N]
         indices = tf.minimum(indices, n_particles - 1)
 
-        # Step 5: Gather resampled particles (non-differentiable)
+        # Step 5: Gather resampled particles
         # Use the ancestor indices to select particles:
         #   x_new^i = x^{a^i}
         # batch_dims=1 means: for each batch element b, gather from
         # state.particles[b] using indices[b], producing resampled_particles[b].
-        # tf.stop_gradient blocks gradient flow because the index selection is
-        # a discrete, non-differentiable operation. 
-        resampled_particles = tf.stop_gradient(
-            tf.gather(state.particles, indices, batch_dims=1)
+        # Gradients flow through the gathered particle values (straight-through),
+        # enabling backpropagation through particle positions to upstream
+        # parameters (e.g., transition networks). The index selection itself
+        # remains discrete and non-differentiable.
+        resampled_particles = tf.gather(
+            state.particles, indices, batch_dims=1
         )
 
         # Step 6: Conditionally apply resampling per batch element
@@ -173,7 +175,7 @@ class CdfInversionResamplerBase(ResamplerBase, abc.ABC):
 
         # Step 7: Compute new log weights (subclass hook)
         new_log_weights = self._compute_new_log_weights(
-            state, n_particles, flags_2d
+            state, indices, n_particles, flags_2d
         )
 
         # Step 8: Compute softmax weights, ESS, and return new State

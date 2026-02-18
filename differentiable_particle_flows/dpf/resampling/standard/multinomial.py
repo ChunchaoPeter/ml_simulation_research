@@ -92,7 +92,7 @@ class MultinomialResampler(CdfInversionResamplerBase):
         """Use the original normalized weights for CDF construction."""
         return state.weights
 
-    def _compute_new_log_weights(self, state: State,
+    def _compute_new_log_weights(self, state: State, indices: tf.Tensor,
                                  n_particles: int,
                                  flags_2d: tf.Tensor) -> tf.Tensor:
         """Reset weights to uniform -log(N) for resampled batch elements."""
