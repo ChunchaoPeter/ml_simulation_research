@@ -1,0 +1,1 @@
+from dpf.resampling.differentiable.soft_resample import SoftResampler
