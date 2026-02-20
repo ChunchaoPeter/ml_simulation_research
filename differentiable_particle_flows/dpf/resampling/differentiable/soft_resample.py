@@ -80,7 +80,7 @@ class SoftResampler(CdfInversionResamplerBase):
                                  n_particles: int,
                                  flags_2d: tf.Tensor) -> tf.Tensor:
         """Gather corrected log weights at ancestor indices."""
-        # Gather Eq. 48 corrected weights at ancestor indices a^i.
+        # Gather corrected weights at ancestor indices a^i.
         # Indices are non-differentiable constants; gradients flow through
         # the gathered weight values (w/w_soft depends continuously on w).
         resampled_log_weights = tf.gather(
