@@ -28,8 +28,8 @@ class SoftResampler(CdfInversionResamplerBase):
     def __init__(self, alpha: float = 0.5, seed: int = DEFAULT_SEED,
                  name: str = 'SoftResampler'):
         super().__init__(seed=seed, name=name)
-        if not 0.0 < alpha <= 1.0:
-            raise ValueError(f"alpha must be in (0, 1], got {alpha}")
+        if not 0.0 < alpha < 1.0:
+            raise ValueError(f"alpha must be in (0, 1), got {alpha}")
         self._alpha = alpha
 
     @property
@@ -53,28 +53,27 @@ class SoftResampler(CdfInversionResamplerBase):
         # log w_soft^i = log(alpha * W^i + (1-alpha)/N)
         # Computed via logsumexp for numerical stability:
         #   logsumexp(log(alpha) + log W^i, log(1-alpha) + log(1/N))
-        if self._alpha < 1.0:
-            log_one_minus_alpha = tf.math.log(
-                tf.cast(1.0 - self._alpha, tf.float64)
-            )
-            q_log_weights = tf.reduce_logsumexp(
-                tf.stack([
-                    log_weights + log_alpha,
-                    uniform_log_weights + log_one_minus_alpha,
-                ], axis=-1),
-                axis=-1,
-            )
-            # Normalize: log w_soft^i -= log(sum_j w_soft^j)
-            q_log_weights = q_log_weights - tf.reduce_logsumexp(
-                q_log_weights, axis=-1, keepdims=True
-            )
-            # log w_new^i = log W^i - log w_soft^i
-            self._corrected_log_weights = log_weights - q_log_weights
-            return tf.exp(self._corrected_log_weights)
-        else:
-            # alpha=1: w_soft = w, corrected weights cancel to uniform
-            q_log_weights = log_weights
-            return tf.exp(q_log_weights)
+        log_one_minus_alpha = tf.math.log(
+            tf.cast(1.0 - self._alpha, tf.float64)
+        )
+        q_log_weights = tf.reduce_logsumexp(
+            tf.stack([
+                log_weights + log_alpha,
+                uniform_log_weights + log_one_minus_alpha,
+            ], axis=-1),
+            axis=-1,
+        )
+
+        # log w_new^i = log W^i - log w_soft^i
+        corrected_log_weights = log_weights - q_log_weights
+
+        # Normalize corrected weights to form a valid sampling distribution
+        corrected_log_weights = corrected_log_weights - tf.reduce_logsumexp(
+            corrected_log_weights, axis=-1, keepdims=True
+        )
+        self._corrected_log_weights = corrected_log_weights
+
+        return tf.exp(self._corrected_log_weights)
 
 
     def _compute_new_log_weights(self, state: State, indices: tf.Tensor,
