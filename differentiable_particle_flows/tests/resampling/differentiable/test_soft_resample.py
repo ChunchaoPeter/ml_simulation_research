@@ -62,7 +62,7 @@ class TestComputeNewLogWeights:
 
         indices = tf.constant([[2, 0, 0, 4, 1],
                                [3, 3, 1, 0, 2]])
-        flags_2d = tf.constant([[True] * N, [True] * N])
+        flags_2d = tf.constant([[True], [True]])            # [batch, 1]
         new_log_w = resampler._compute_new_log_weights(
             state, indices, N, flags_2d
         ).numpy()
@@ -82,7 +82,7 @@ class TestComputeNewLogWeights:
 
         indices = tf.constant([[0, 1, 2, 3, 4],
                                [0, 1, 2, 3, 4]])
-        flags_2d = tf.constant([[False] * N, [False] * N])
+        flags_2d = tf.constant([[False], [False]])          # [batch, 1]
         new_log_w = resampler._compute_new_log_weights(
             state, indices, N, flags_2d
         )
