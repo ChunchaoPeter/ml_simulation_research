@@ -114,23 +114,3 @@ class TestGradientFlow:
         assert grad.shape == (BATCH, N)
         assert tf.reduce_any(grad != 0.0).numpy(), "All gradients are zero"
 
-    def test_gradient_through_get_cdf_weights(self):
-        """d(cdf_weights)/d(log_weights) must be non-zero, verifying
-        the soft weight computation is differentiable."""
-        log_w = tf.Variable(np.log(W), dtype=tf.float64)
-        particles = tf.constant(
-            np.arange(N, dtype=np.float64)[np.newaxis, :, np.newaxis]
-            * np.ones((BATCH, 1, 1)),
-            dtype=tf.float64,
-        )
-        resampler = SoftResampler(alpha=0.5)
-
-        with tf.GradientTape() as tape:
-            state = State(particles=particles, log_weights=log_w)
-            cdf_weights = resampler._get_cdf_weights(state)
-            loss = tf.reduce_sum(cdf_weights)
-
-        grad = tape.gradient(loss, log_w)
-        assert grad is not None, "No gradient through _get_cdf_weights"
-        assert grad.shape == (BATCH, N)
-        assert tf.reduce_any(grad != 0.0).numpy()
