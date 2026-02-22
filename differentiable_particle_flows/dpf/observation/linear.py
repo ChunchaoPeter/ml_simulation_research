@@ -114,8 +114,7 @@ class LinearObservationModel(ObservationModelBase):
 
         # Accumulated log marginal likelihood:
         #   log p(y_t | y_{1:t-1}) ≈ log(1/N * sum_i exp(log p(y_t | x_t^i)))
-        n = tf.cast(tf.shape(log_liks)[-1], tf.float64)
-        step_log_ml = tf.reduce_logsumexp(log_liks, axis=-1) - tf.math.log(n)
+        step_log_ml = tf.reduce_logsumexp(state.log_weights + log_liks, axis=-1)
         new_log_likelihoods = state.log_likelihoods + step_log_ml
 
         return attr.evolve(
