@@ -25,13 +25,6 @@ def apply_transport_matrix(state: State, transport_matrix: tf.Tensor, flags: tf.
     resampled_weights = resample(state.weights, uniform_weights, flags)
     resampled_log_weights = resample(state.log_weights, uniform_log_weights, flags)
 
-    additional_variables = {}
-
-    for additional_state_variable in state.ADDITIONAL_STATE_VARIABLES:
-        state_variable = getattr(state, additional_state_variable)
-        transported_state_variable = tf.linalg.matmul(transport_matrix, state.particles)
-        additional_variables[additional_state_variable] = resample(state_variable, transported_state_variable, flags)
-
     return attr.evolve(state, particles=resampled_particles, weights=resampled_weights,
                        log_weights=resampled_log_weights)
 
@@ -73,14 +66,7 @@ class RegularisedOTResampler(ResamplerBase, metaclass=abc.ABCMeta):
         :return: resampled state
         :rtype: State
         """
-        # TODO: The real batch_size is the sum of flags. We shouldn't do more operations than we need...
-        if self.additional_variables_are_state:
-            particles_list = [state.particles]
-            for additional_state_variable in state.ADDITIONAL_STATE_VARIABLES:
-                particles_list.append(getattr(state, additional_state_variable))
-            particles = tf.concat(particles_list, axis=-1)
-        else:
-            particles = state.particles
+        particles = state.particles
 
         transport_matrix = transport(particles, state.log_weights, self.epsilon, self.scaling,
                                      self.convergence_threshold, self.max_iter, state.n_particles)
