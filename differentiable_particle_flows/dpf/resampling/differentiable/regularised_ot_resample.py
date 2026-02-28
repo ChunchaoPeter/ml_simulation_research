@@ -16,7 +16,7 @@ def resample(tensor: tf.Tensor, new_tensor: tf.Tensor, flags: tf.Tensor):
 
 
 def apply_transport_matrix(state: State, transport_matrix: tf.Tensor, flags: tf.Tensor):
-    float_n_particles = tf.cast(state.n_particles, float)
+    float_n_particles = tf.cast(state.n_particles, state.particles.dtype)
     transported_particles = tf.linalg.matmul(transport_matrix, state.particles)
     uniform_log_weights = -tf.math.log(float_n_particles) * tf.ones_like(state.log_weights)
     uniform_weights = tf.ones_like(state.weights) / float_n_particles
@@ -47,10 +47,10 @@ class RegularisedOTResampler(ResamplerBase, metaclass=abc.ABCMeta):
         :param convergence_threshold: float
             Fixed point iterates converge when potentials don't move more than this anymore
         """
-        self.convergence_threshold = tf.cast(convergence_threshold, float)
+        self.convergence_threshold = tf.cast(convergence_threshold, tf.float64)
         self.max_iter = tf.cast(max_iter, tf.dtypes.int32)
-        self.epsilon = tf.cast(epsilon, float)
-        self.scaling = tf.cast(scaling, float)
+        self.epsilon = tf.cast(epsilon, tf.float64)
+        self.scaling = tf.cast(scaling, tf.float64)
         super(RegularisedOTResampler, self).__init__(name=name)
 
     def apply(self, state: State, flags: tf.Tensor, seed=None):

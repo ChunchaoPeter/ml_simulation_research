@@ -5,7 +5,7 @@ def diameter(x, y):
     diameter_x = tf.reduce_max(tf.math.reduce_std(x, 1), -1)
     diameter_y = tf.reduce_max(tf.math.reduce_std(y, 1), -1)
     res = tf.maximum(diameter_x, diameter_y)
-    return tf.where(res == 0., 1., res)
+    return tf.where(res == 0., tf.ones_like(res), res)
 
 
 @tf.function
@@ -54,7 +54,8 @@ def squared_distances(x: tf.Tensor, y: tf.Tensor) -> tf.Tensor:
     xx = tf.reduce_sum(x * x, axis=2, keepdims=True)
     xy = tf.matmul(x, y, transpose_b=True)
     yy = tf.expand_dims(tf.reduce_sum(y * y, axis=-1), 1)
-    return tf.clip_by_value(xx - 2 * xy + yy, 0., float('inf'))
+    result = xx - 2 * xy + yy
+    return tf.clip_by_value(result, tf.cast(0., result.dtype), tf.cast(float('inf'), result.dtype))
 
 
 @tf.function

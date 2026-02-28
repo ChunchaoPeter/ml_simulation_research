@@ -21,7 +21,7 @@ def transport_from_potentials(x, f, g, eps, logw, n):
     :rtype: tf.Tensor[B, N, N]
 
     """
-    float_n = tf.cast(n, float)
+    float_n = tf.cast(n, x.dtype)
     log_n = tf.math.log(float_n)
 
     cost_matrix = cost(x, x)
@@ -56,10 +56,10 @@ def transport(x, logw, eps, scaling, threshold, max_iter, n):
     :return transport matrix
     :rtype tf.Tensor[B, N, N]
     """
-    float_n = tf.cast(n, float)
+    float_n = tf.cast(n, x.dtype)
     log_n = tf.math.log(float_n)
     uniform_log_weight = -log_n * tf.ones_like(logw)
-    dimension = tf.cast(x.shape[-1], tf.float32)
+    dimension = tf.cast(x.shape[-1], x.dtype)
     centered_x = x - tf.stop_gradient(tf.reduce_mean(x, axis=1, keepdims=True))
     diameter_value = diameter(x, x)
     scale = tf.reshape(diameter_value, [-1, 1, 1]) * tf.sqrt(dimension)
@@ -70,7 +70,7 @@ def transport(x, logw, eps, scaling, threshold, max_iter, n):
     transport_matrix = transport_from_potentials(scaled_x, alpha, beta, eps, logw, float_n)
 
     def grad(d_transport):
-        d_transport = tf.clip_by_value(d_transport, -1., 1.)
+        d_transport = tf.clip_by_value(d_transport, tf.cast(-1., d_transport.dtype), tf.cast(1., d_transport.dtype))
         # mask = logw > MIN_RELATIVE_LOG_WEIGHT * tf.math.log(float_n)  # the other particles have died out really.
         dx, dlogw = tf.gradients(transport_matrix, [x, logw], d_transport)
         # dlogw = tf.where(mask, dlogw, 0.)
