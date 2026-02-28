@@ -34,7 +34,7 @@ class RegularisedOTResampler(ResamplerBase, metaclass=abc.ABCMeta):
     DIFFERENTIABLE = True
 
     # TODO: Document this really nicely
-    def __init__(self, epsilon, scaling=0.75, max_iter=100, convergence_threshold=1e-3, additional_variables_are_state=False, name='RegularisedTransform',
+    def __init__(self, epsilon, scaling=0.75, max_iter=100, convergence_threshold=1e-3, name='RegularisedTransform',
                  **_kwargs):
         """Constructor
 
@@ -46,14 +46,11 @@ class RegularisedOTResampler(ResamplerBase, metaclass=abc.ABCMeta):
             max number of iterations in Sinkhorn
         :param convergence_threshold: float
             Fixed point iterates converge when potentials don't move more than this anymore
-        :param additional_variables_are_state: bool
-            Use the "ADDITIONAL_VARIABLES" flag as part of the state or take the conditional expectation
         """
         self.convergence_threshold = tf.cast(convergence_threshold, float)
         self.max_iter = tf.cast(max_iter, tf.dtypes.int32)
         self.epsilon = tf.cast(epsilon, float)
         self.scaling = tf.cast(scaling, float)
-        self.additional_variables_are_state = additional_variables_are_state
         super(RegularisedOTResampler, self).__init__(name=name)
 
     def apply(self, state: State, flags: tf.Tensor, seed=None):
