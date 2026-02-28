@@ -1,11 +1,5 @@
 import tensorflow as tf
 
-
-def _fillna(tensor):
-    mask = tf.math.is_finite(tensor)
-    return tf.where(mask, tensor, tf.zeros_like(tensor))
-
-
 @tf.function
 def diameter(x, y):
     diameter_x = tf.reduce_max(tf.math.reduce_std(x, 1), -1)

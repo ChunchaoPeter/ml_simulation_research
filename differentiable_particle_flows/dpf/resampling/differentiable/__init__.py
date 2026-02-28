@@ -1,1 +1,2 @@
 from dpf.resampling.differentiable.soft_resample import SoftResampler
+from dpf.resampling.differentiable.regularised_ot_resample import RegularisedOTResampler

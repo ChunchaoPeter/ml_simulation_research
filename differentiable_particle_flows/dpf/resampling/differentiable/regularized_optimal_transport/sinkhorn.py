@@ -1,51 +1,9 @@
 import tensorflow as tf
 
-from filterflow.resampling.differentiable.regularized_transport.utils import cost, softmin, max_min
+from dpf.resampling.differentiable.regularized_optimal_transport.ot_utils import cost, softmin, max_min
 
 
 # This is very much adapted from Feydy's geomloss work. Hopefully these should merge into one library...
-
-@tf.function
-def _simple_sinkhorn_loop(log_alpha, log_beta, cost_xy, cost_yx, epsilon, threshold, max_iter):
-    epsilon = tf.ones([log_alpha.shape[0], 1]) * epsilon
-
-    a_y_init = softmin(epsilon, cost_yx, log_alpha)
-    b_x_init = softmin(epsilon, cost_xy, log_beta)
-
-    def apply_one(a_y, b_x):
-        at_y = softmin(epsilon, cost_yx, log_alpha + b_x / epsilon)
-        bt_x = softmin(epsilon, cost_xy, log_beta + a_y / epsilon)
-
-        a_y_new = .5 * (a_y + at_y)
-        b_x_new = .5 * (b_x + bt_x)
-
-        a_y_diff = tf.reduce_max(tf.abs(a_y_new - a_y))
-        b_x_diff = tf.reduce_max(tf.abs(b_x_new - b_x))
-
-        return a_y_new, b_x_new, tf.maximum(a_y_diff, b_x_diff)
-
-    def stop_condition(i, _u, _v, update_size):
-        n_iter_cond = i < max_iter - 1
-        stable_cond = update_size > threshold
-        return tf.logical_and(n_iter_cond, tf.reduce_all(stable_cond))
-
-    def body(i, u, v, _update_size):
-        new_u, new_v, new_update_size = apply_one(u, v)
-        return i + 1, new_u, new_v, new_update_size
-
-    n_iter = tf.constant(0)
-    initial_update_size = 2 * threshold
-
-    total_iter, converged_a_y, converged_b_x, last_update_size = tf.while_loop(stop_condition, body,
-                                                                               loop_vars=[n_iter,
-                                                                                          a_y_init,
-                                                                                          b_x_init,
-                                                                                          initial_update_size])
-
-    # We do a last extrapolation for the gradient - leverages fixed point + implicit function theorem
-    a_y, b_x, _ = apply_one(tf.stop_gradient(converged_a_y), tf.stop_gradient(converged_b_x))
-    return a_y, b_x, total_iter
-
 
 @tf.function
 def sinkhorn_loop(log_alpha, log_beta, cost_xy, cost_yx, cost_xx, cost_yy, epsilon, particles_diameter, scaling,

@@ -1,12 +1,7 @@
 import tensorflow as tf
 
-from filterflow.resampling.differentiable.regularized_transport.sinkhorn import sinkhorn_potentials
-from filterflow.resampling.differentiable.regularized_transport.utils import cost, diameter
-
-
-@tf.function
-def _fillna(tensor):
-    return tf.where(tf.math.is_finite(tensor), tensor, tf.zeros_like(tensor))
+from dpf.resampling.differentiable.regularized_optimal_transport.sinkhorn import sinkhorn_potentials
+from dpf.resampling.differentiable.regularized_optimal_transport.ot_utils import cost, diameter
 
 
 @tf.function

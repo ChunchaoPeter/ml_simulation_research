@@ -3,9 +3,16 @@ import abc
 import attr
 import tensorflow as tf
 
-from filterflow.base import State
-from filterflow.resampling.base import ResamplerBase, resample
-from filterflow.resampling.differentiable.regularized_transport.plan import transport
+from dpf.base import State
+from dpf.resampling.base import ResamplerBase
+from dpf.resampling.differentiable.regularized_optimal_transport.plan import transport
+
+
+@tf.function
+def resample(tensor: tf.Tensor, new_tensor: tf.Tensor, flags: tf.Tensor):
+    ndim = len(tensor.shape)
+    shape = [-1] + [1] * (ndim - 1)
+    return tf.where(tf.reshape(flags, shape), new_tensor, tensor)
 
 
 def apply_transport_matrix(state: State, transport_matrix: tf.Tensor, flags: tf.Tensor):
@@ -29,7 +36,7 @@ def apply_transport_matrix(state: State, transport_matrix: tf.Tensor, flags: tf.
                        log_weights=resampled_log_weights)
 
 
-class RegularisedTransform(ResamplerBase, metaclass=abc.ABCMeta):
+class RegularisedOTResampler(ResamplerBase, metaclass=abc.ABCMeta):
     """Regularised Transform - docstring to come."""
     DIFFERENTIABLE = True
 
@@ -54,7 +61,7 @@ class RegularisedTransform(ResamplerBase, metaclass=abc.ABCMeta):
         self.epsilon = tf.cast(epsilon, float)
         self.scaling = tf.cast(scaling, float)
         self.additional_variables_are_state = additional_variables_are_state
-        super(RegularisedTransform, self).__init__(name=name)
+        super(RegularisedOTResampler, self).__init__(name=name)
 
     def apply(self, state: State, flags: tf.Tensor, seed=None):
         """ Resampling method
