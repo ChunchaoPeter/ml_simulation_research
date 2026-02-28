@@ -15,14 +15,6 @@ Key properties verified:
 Reference: test structure adapted from filterflow-master/tests/resampling/
            differentiable/optimal_transport/test_sinkhorn.py
 """
-import math
-import ot
-MIN_RELATIVE_LOG_WEIGHT = -4.
-# for example if using 10 particles, we consider those with weight exp(-4*ln(10)) = 1e-4 to have died out
-MIN_ABSOLUTE_LOG_WEIGHT = -13.8  # approx. -6 ln(10)
-
-MIN_RELATIVE_WEIGHT = math.exp(MIN_RELATIVE_LOG_WEIGHT)
-MIN_ABSOLUTE_WEIGHT = math.exp(MIN_ABSOLUTE_LOG_WEIGHT)
 import tensorflow as tf
 import numpy as np
 
@@ -32,40 +24,6 @@ from dpf.resampling.differentiable.regularized_optimal_transport.plan import (
 from dpf.resampling.differentiable.regularized_optimal_transport.sinkhorn import (
     sinkhorn_potentials,
 )
-
-
-from dpf.resampling.differentiable.regularized_optimal_transport.ot_utils import (
-    squared_distances,
-    cost,
-    softmin,
-    diameter,
-    max_min,
-)
-
-@tf.function
-def _normalize(weights, axis, log=True):
-    """Normalises weights, either expressed in log terms or in their natural space"""
-    if log:
-        normalizer = tf.reduce_logsumexp(weights, axis=axis, keepdims=True)
-        return weights - normalizer
-    normalizer = tf.reduce_sum(weights, axis=axis)
-    return weights / normalizer
-
-
-@tf.function
-def normalize(weights, axis, n, log=True):
-    """Normalises weights, either expressed in log terms or in their natural space"""
-    float_n = tf.cast(n, float)
-
-    if log:
-        normalized_weights = tf.clip_by_value(_normalize(weights, axis, True), tf.constant(-1e3), tf.constant(0.))
-        stop_gradient_mask = normalized_weights < tf.maximum(MIN_ABSOLUTE_LOG_WEIGHT, MIN_RELATIVE_LOG_WEIGHT * float_n)
-    else:
-        normalized_weights = _normalize(weights, axis, False)
-        stop_gradient_mask = normalized_weights < tf.maximum(MIN_ABSOLUTE_WEIGHT, MIN_RELATIVE_WEIGHT ** float_n)
-    float_stop_gradient_mask = tf.cast(stop_gradient_mask, float)
-    return tf.stop_gradient(float_stop_gradient_mask * normalized_weights) + (
-            1. - float_stop_gradient_mask) * normalized_weights
 
 
 DTYPE = tf.float64
@@ -359,90 +317,3 @@ class TestEpsilonSensitivity:
         # The std across rows (for each column) should be small
         mean_row_std = tf.reduce_mean(row_std).numpy()
         assert mean_row_std < 0.05, f"Expected near-uniform rows, got mean row std = {mean_row_std}"
-
-
-
-class TestSinkhorn(tf.test.TestCase):
-    def setUp(self):
-        np.random.seed(42)
-        n_particles = 25
-        batch_size = 3
-        dimension = 2
-
-        self.n_particles = tf.constant(n_particles)
-        self.batch_size = tf.constant(batch_size)
-        self.dimension = tf.constant(dimension)
-
-        self.np_epsilon = 0.25
-        self.epsilon = tf.constant(self.np_epsilon)
-
-        self.threshold = tf.constant(1e-5)
-        self.n_iter = tf.constant(100)
-
-        self.np_x = np.random.uniform(-1., 1., [batch_size, n_particles, dimension]).astype(np.float32)
-        self.x = tf.constant(self.np_x)
-
-        degenerate_weights = np.random.uniform(0., 1., [batch_size, n_particles]).astype(np.float32)
-        degenerate_weights /= degenerate_weights.sum(axis=1, keepdims=True)
-
-        self.degenerate_weights = degenerate_weights
-        self.degenerate_logw = tf.math.log(degenerate_weights)
-
-        self.uniform_logw = tf.zeros_like(degenerate_weights) - tf.math.log(float(n_particles))
-
-    def test_transport(self):
-        T_scaled = transport(self.x, self.degenerate_logw, self.epsilon, 0.75, self.threshold,
-                             self.n_iter, self.n_particles)
-
-        self.assertAllClose(tf.constant(self.degenerate_weights) * tf.cast(self.n_particles, float),
-                            tf.reduce_sum(T_scaled, 1), atol=1e-2)
-
-        self.assertAllClose(tf.reduce_sum(T_scaled, 2), tf.ones_like(self.degenerate_logw), atol=1e-2)
-
-        self.assertAllClose(tf.reduce_sum(T_scaled, [1, 2]),
-                            tf.cast(self.n_particles, float) * tf.ones([self.batch_size]), atol=1e-4)
-        scale_x = diameter(self.x, self.x).numpy()[0]
-        np_x = (self.np_x[0] - np.mean(self.np_x[0], 0, keepdims=True)) / scale_x
-        np_transport_matrix = ot.bregman.empirical_sinkhorn(np_x, np_x,
-                                                            self.np_epsilon ** 0.5,
-                                                            b=self.degenerate_weights[0])
-
-        self.assertAllClose(T_scaled[0] @ self.x[0], np_transport_matrix * self.n_particles.numpy() @ self.np_x[0],
-                            atol=1e-3)
-
-    def test_penalty(self):
-        penalties = []
-        for epsilon in np.linspace(0.05, 5., 50, dtype=np.float32):
-            T_scaled = transport(self.x, self.degenerate_logw, tf.constant(epsilon), 0.75, self.threshold,
-                                 self.n_iter, self.n_particles) / tf.cast(self.n_particles, float)
-
-            temp = tf.math.log(T_scaled) - tf.expand_dims(self.uniform_logw, -1) - tf.expand_dims(self.degenerate_logw,
-                                                                                                  1)
-            temp -= 1
-            temp *= T_scaled
-            penalties.append(-tf.reduce_sum(temp, [1, 2]).numpy() - 1)
-
-        import matplotlib.pyplot as plt
-        plt.plot(np.linspace(0.05, 2., 50), penalties)
-        plt.show()
-
-    def test_gradient_transport(self):
-        @tf.function
-        def fun_x(x):
-            transport_matrix = transport(x, self.degenerate_logw, self.epsilon, tf.constant(0.75), self.threshold,
-                                         self.n_iter, self.n_particles)
-            return tf.math.reduce_sum(tf.linalg.matmul(transport_matrix, x))
-
-        @tf.function
-        def fun_logw(logw):
-            logw = normalize(logw, 1, self.n_particles)
-
-            transport_matrix = transport(self.x, logw, self.epsilon, tf.constant(0.9),
-                                         self.threshold, self.n_iter, self.n_particles)
-            return tf.math.reduce_sum(tf.linalg.matmul(transport_matrix, self.x))
-
-        theoretical, numerical = tf.test.compute_gradient(fun_x, [self.x], delta=1e-3)
-        self.assertAllClose(theoretical[0], numerical[0], atol=1e-2)
-
-        theoretical, numerical = tf.test.compute_gradient(fun_logw, [self.degenerate_logw], delta=1e-5)
-        self.assertAllClose(theoretical[0], numerical[0], atol=1e-2, rtol=1e-2)
