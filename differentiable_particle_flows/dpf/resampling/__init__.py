@@ -11,4 +11,4 @@ from dpf.resampling.base import ResamplerBase
 from dpf.resampling.resampling_base import CdfInversionResamplerBase
 from dpf.resampling.criterion import ResamplingCriterionBase, NeffCriterion
 from dpf.resampling.standard import MultinomialResampler
-from dpf.resampling.differentiable import SoftResampler
+from dpf.resampling.differentiable import SoftResampler, RegularisedOTResampler
