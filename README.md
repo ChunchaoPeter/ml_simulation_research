@@ -11,6 +11,7 @@ This repository implements and analyzes simulation-based filtering methods for p
 - **Unscented Kalman Filter (UKF)** - Sigma point transform for non-linear systems
 - **Particle Filter (PF)** - Sequential Monte Carlo for general non-linear/non-Gaussian systems
 - **Deterministic Kernel Flows** - EDH, LEDH, PFPF, and PFF for high-dimensional state estimation
+- **Differentiable Particle Flows** - A reusable OOP-based SMC framework with differentiable resampling via entropy-regularized optimal transport, designed to generalise to new state-space models
 
 The report JPM_MLCOE__Particle_Flow___Differentiable_PFs__Chunchao_.pdf include:
 
@@ -44,7 +45,20 @@ ml_simulation_research/
 │   ├── acoustic_function.py  # Multi-target tracking model
 │   ├── tests/             # Comprehensive test coverage
 │   └── *.ipynb            # Demo and comparison notebooks
+│
+├── differentiable_particle_flows/  # Differentiable Particle Filtering (OOP Framework)
+│   ├── dpf/               # Core package
+│   │   ├── base.py        # State, StateSeries, Module
+│   │   ├── smc.py         # SMC orchestrator
+│   │   ├── observation/   # Observation models p(y|x)
+│   │   ├── transition/    # Transition models p(x_t|x_{t-1})
+│   │   ├── proposal/      # Proposal distributions q(x|...)
+│   │   └── resampling/    # Multinomial, Soft, and OT resampling
+│   ├── examples/          # Demo notebooks
+│   └── tests/             # Comprehensive test coverage
 ```
+
+> **Note on `differentiable_particle_flows/`**: Unlike the other subprojects which are standalone implementations, `differentiable_particle_flows` is a proper **object-oriented SMC framework**. The codebase is reorganized into abstract base classes (`ObservationModelBase`, `TransitionModelBase`, `ProposalModelBase`, `ResamplerBase`) and a generic `SMC` orchestrator that composes them via dependency injection. This makes it a **reusable foundation** — to apply the particle filter to a new state-space model (e.g., nonlinear dynamics, non-Gaussian observations, neural network proposals), you only need to implement the relevant abstract interfaces and plug them in. The core filtering logic and all resampling strategies (multinomial, soft, regularised OT) work unchanged. See [`differentiable_particle_flows/README.md`](differentiable_particle_flows/README.md) for the full architecture guide and extension examples.
 
 
 ## Documentation
@@ -53,6 +67,7 @@ ml_simulation_research/
 - **`ekf_ukf_pf/README.md`** - Non-linear filtering algorithms overview
 - **`ekf_ukf_pf/range_bearing_model_documentation.md`** - Mathematical formulation
 - **`deterministic_kernel_flows/README.md`** - Deterministic kernel flow methods (EDH, LEDH, PFPF, PFF)
+- **`differentiable_particle_flows/README.md`** - Differentiable particle filtering with OT resampling
 
 ## Notebooks
 
@@ -74,6 +89,11 @@ ml_simulation_research/
 - `pff_showcase_matric_valued_kernel.ipynb` - Matrix-valued kernel demonstration
 - `compare_edh_ledh_pff_with_range_model.ipynb` - Comparison with EKF/UKF/PF
 - `acoustic_function_demo.ipynb` - Acoustic multi-target tracking
+
+### Differentiable Particle Flows
+- `examples/pf_demo_smc.ipynb` - Standard particle filter with multinomial resampling
+- `examples/pf_demo_soft_resampling.ipynb` - Soft differentiable resampling
+- `examples/pf_demo_reqularised_ot_resampling.ipynb` - Regularised OT resampling (DET)
 
 ## License
 
