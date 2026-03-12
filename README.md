@@ -13,12 +13,11 @@ This repository implements and analyzes simulation-based filtering methods for p
 - **Deterministic Kernel Flows** - EDH, LEDH, PFPF, and PFF for high-dimensional state estimation
 - **Differentiable Particle Flows** - A reusable OOP-based SMC framework with differentiable resampling via entropy-regularized optimal transport, designed to generalise to new state-space models
 
-The report JPM_MLCOE__Particle_Flow___Differentiable_PFs__Chunchao_.pdf include:
+The report Particle_Flow___Differentiable_PFs_Report.pdf include:
 
-- A literature review of potential methods for solving the problem.
-- Propose your choice of methods and the reason for the choice.
-- Present the answers to the question in clear and understandable language.
-- Testing plans and testing results that show your implementation is correct and your results are valid. 
+- Section A. A literature review.
+- Section B. From classical filters to particle flows (Part I).
+- Section C. Stochastic Particle Flow and Differentiable PF (Part II).
 ## Repository Structure
 
 ```
