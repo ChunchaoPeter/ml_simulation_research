@@ -1,99 +1,125 @@
 # ML Simulation Research
 
-State estimation and filtering algorithms for linear and non-linear state-space models using TensorFlow.
+TensorFlow implementations of classical Bayesian filters, deterministic particle flows, kernel flows, and differentiable Sequential Monte Carlo (SMC) methods for state estimation in linear, nonlinear, and non-Gaussian state-space models.
 
-## Overview
+## What is included
 
-This repository implements and analyzes simulation-based filtering methods for probabilistic state estimation:
+| Project | Methods | Typical use |
+|---|---|---|
+| [`kf_lgssm/`](kf_lgssm/) | Kalman filter for linear Gaussian state-space models | Baseline filtering, controls, and covariance-stability analysis |
+| [`ekf_ukf_pf/`](ekf_ukf_pf/) | Extended KF, unscented KF, and bootstrap particle filter | Nonlinear range-bearing tracking |
+| [`deterministic_kernel_flows/`](deterministic_kernel_flows/) | EDH, LEDH, PFPF-EDH, PFPF-LEDH, and kernel PFF | Nonlinear tracking and high-dimensional data assimilation |
+| [`differentiable_particle_flows/`](differentiable_particle_flows/) | Modular SMC with multinomial, soft, and regularised-OT resampling | Differentiable filtering and reusable model components |
 
-- **Kalman Filter (KF)** - Optimal filtering for linear Gaussian state-space models
-- **Extended Kalman Filter (EKF)** - Linearization-based filtering for non-linear systems
-- **Unscented Kalman Filter (UKF)** - Sigma point transform for non-linear systems
-- **Particle Filter (PF)** - Sequential Monte Carlo for general non-linear/non-Gaussian systems
-- **Deterministic Kernel Flows** - EDH, LEDH, PFPF, and PFF for high-dimensional state estimation
-- **Differentiable Particle Flows** - A reusable OOP-based SMC framework with differentiable resampling via entropy-regularized optimal transport, designed to generalise to new state-space models
+The accompanying [`Particle_Flow___Differentiable_PFs_Report.pdf`](Particle_Flow___Differentiable_PFs_Report.pdf) provides the theoretical background:
 
-The report Particle_Flow___Differentiable_PFs_Report.pdf include:
+- a literature review of state-estimation methods;
+- a progression from classical Kalman and particle filters to deterministic particle flows; and
+- stochastic particle flow and differentiable particle-filter methods.
 
-- Section A. A literature review.
-- Section B. From classical filters to particle flows (Part I).
-- Section C. Stochastic Particle Flow and Differentiable PF (Part II).
-## Repository Structure
+## Repository layout
 
-```
+```text
 ml_simulation_research/
-├── kf_lgssm/              # Kalman Filter for Linear Gaussian Systems
-│   ├── kf_lgssm.py        # KF implementation
-│   ├── lgss_sample.py     # Data generation
-│   ├── tests/             # 20 unit and integration tests
-│   └── *.ipynb            # Demo notebooks and analysis
-│
-├── ekf_ukf_pf/            # Non-linear Filtering Algorithms
-│   ├── ekf.py             # Extended Kalman Filter
-│   ├── ukf.py             # Unscented Kalman Filter
-│   ├── pf.py              # Particle Filter
-│   ├── range_bearing_model.py  # Non-linear state-space model
-│   ├── tests/             # 40 unit and integration tests
-│   └── *.ipynb            # Demo and comparison notebooks
-│
-├── deterministic_kernel_flows/  # Deterministic Kernel Flow Methods
-│   ├── edh.py             # Exact Daum-Huang filter
-│   ├── pfpf_edh.py        # Particle Flow Particle Filter (EDH)
-│   ├── pfpf_ledh.py       # Localized PFPF
-│   ├── pff.py             # Particle Flow Filter
-│   ├── acoustic_function.py  # Multi-target tracking model
-│   ├── tests/             # Comprehensive test coverage
-│   └── *.ipynb            # Demo and comparison notebooks
-│
-├── differentiable_particle_flows/  # Differentiable Particle Filtering (OOP Framework)
-│   ├── dpf/               # Core package
-│   │   ├── base.py        # State, StateSeries, Module
-│   │   ├── smc.py         # SMC orchestrator
-│   │   ├── observation/   # Observation models p(y|x)
-│   │   ├── transition/    # Transition models p(x_t|x_{t-1})
-│   │   ├── proposal/      # Proposal distributions q(x|...)
-│   │   └── resampling/    # Multinomial, Soft, and OT resampling
-│   ├── examples/          # Demo notebooks
-│   └── tests/             # Comprehensive test coverage
+├── kf_lgssm/                       # Linear Gaussian models and Kalman filter
+├── ekf_ukf_pf/                     # Nonlinear EKF, UKF, and particle filter
+├── deterministic_kernel_flows/     # EDH, LEDH, PFPF, and kernel PFF
+├── differentiable_particle_flows/  # Reusable object-oriented SMC package
+├── Particle_Flow___Differentiable_PFs_Report.pdf
+└── LICENSE
 ```
 
-> **Note on `differentiable_particle_flows/`**: Unlike the other subprojects which are standalone implementations, `differentiable_particle_flows` is a proper **object-oriented SMC framework**. The codebase is reorganized into abstract base classes (`ObservationModelBase`, `TransitionModelBase`, `ProposalModelBase`, `ResamplerBase`) and a generic `SMC` orchestrator that composes them via dependency injection. This makes it a **reusable foundation** — to apply the particle filter to a new state-space model (e.g., nonlinear dynamics, non-Gaussian observations, neural network proposals), you only need to implement the relevant abstract interfaces and plug them in. The core filtering logic and all resampling strategies (multinomial, soft, regularised OT) work unchanged. See [`differentiable_particle_flows/README.md`](differentiable_particle_flows/README.md) for the full architecture guide and extension examples.
+Each subproject has its own dependency file, tests, notebooks, and detailed README. Run commands from the selected subproject directory so its local imports resolve correctly.
 
+## Choosing an implementation
 
-## Documentation
+- Use **`kf_lgssm`** when both dynamics and observations are linear and Gaussian.
+- Use **EKF** when differentiable nonlinear models and analytical Jacobians are available.
+- Use **UKF** when Jacobians are inconvenient and the state dimension is moderate.
+- Use **PF** for nonlinear or non-Gaussian posteriors when sampling cost is acceptable.
+- Use **EDH/LEDH/PFPF** to migrate particles toward observations with deterministic flows.
+- Use **PFF** for high-dimensional ensemble data assimilation with kernel localisation.
+- Use **`differentiable_particle_flows`** when model parameters must be trained through the filtering computation.
 
-- **`kf_lgssm/README.md`** - Kalman Filter documentation and usage
-- **`ekf_ukf_pf/README.md`** - Non-linear filtering algorithms overview
-- **`ekf_ukf_pf/range_bearing_model_documentation.md`** - Mathematical formulation
-- **`deterministic_kernel_flows/README.md`** - Deterministic kernel flow methods (EDH, LEDH, PFPF, PFF)
-- **`differentiable_particle_flows/README.md`** - Differentiable particle filtering with OT resampling
+## Installation
 
-## Notebooks
+Create a separate environment for the subproject you want to run. For example:
 
-### Kalman Filter
-- `kalman_filter_implementation_demo.ipynb` - Basic KF implementation
-- `kalman_filter_analysis_optimality_stability.ipynb` - Numerical stability analysis
+```bash
+git clone <repository-url>
+cd ml_simulation_research/kf_lgssm
 
-### Non-linear Filters
-- `ekf_demo.ipynb` - Extended Kalman Filter demonstration
-- `ukf_demo.ipynb` - Unscented Kalman Filter with parameter tuning
-- `pf_demo.ipynb` - Particle Filter with ESS analysis
-- `compare_pf_ekf_ukf.ipynb` - Performance comparison
+python -m venv .venv
+source .venv/bin/activate        # Windows: .venv\Scripts\activate
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+```
 
-### Deterministic Kernel Flows
-- `edh_ledh_demo.ipynb` - EDH and LEDH filtering comparison
-- `pfpf_edh_demo.ipynb` - PFPF-EDH with importance weighting
-- `pfpf_ledh_demo_with_comparison.ipynb` - Localized PFPF performance analysis
-- `pff_demo_100_dimension.ipynb` - High-dimensional PFF data assimilation
-- `pff_showcase_matric_valued_kernel.ipynb` - Matrix-valued kernel demonstration
-- `compare_edh_ledh_pff_with_range_model.ipynb` - Comparison with EKF/UKF/PF
-- `acoustic_function_demo.ipynb` - Acoustic multi-target tracking
+Replace `kf_lgssm` with another project directory as needed. The requirement files are independently pinned, so installing every project into the same environment is not recommended.
 
-### Differentiable Particle Flows
-- `examples/pf_demo_smc.ipynb` - Standard particle filter with multinomial resampling
-- `examples/pf_demo_soft_resampling.ipynb` - Soft differentiable resampling
-- `examples/pf_demo_reqularised_ot_resampling.ipynb` - Regularised OT resampling (DET)
+## Run the tests
+
+From the repository root:
+
+```bash
+(cd kf_lgssm && python -m pytest)
+(cd ekf_ukf_pf && python -m pytest)
+(cd deterministic_kernel_flows && python -m pytest)
+(cd differentiable_particle_flows && python -m pytest)
+```
+
+To run a single test file, enter its project directory and pass the file to `pytest`, for example:
+
+```bash
+cd kf_lgssm
+python -m pytest tests/test_kf_lgssm.py -v
+```
+
+## Notebook guide
+
+### Linear Kalman filter
+
+- [`kalman_filter_implementation_demo.ipynb`](kf_lgssm/kalman_filter_implementation_demo.ipynb) — end-to-end filtering workflow
+- [`kalman_filter_analysis_optimality_stability.ipynb`](kf_lgssm/kalman_filter_analysis_optimality_stability.ipynb) — standard and Joseph covariance updates
+
+### Nonlinear filters
+
+- [`range_bearing_model_demo.ipynb`](ekf_ukf_pf/range_bearing_model_demo.ipynb) — nonlinear tracking model
+- [`ekf_demo.ipynb`](ekf_ukf_pf/ekf_demo.ipynb) — extended Kalman filter
+- [`ukf_demo.ipynb`](ekf_ukf_pf/ukf_demo.ipynb) — unscented Kalman filter
+- [`pf_demo.ipynb`](ekf_ukf_pf/pf_demo.ipynb) — particle weights, resampling, and degeneracy
+- [`compare_pf_ekf_ukf.ipynb`](ekf_ukf_pf/compare_pf_ekf_ukf.ipynb) — accuracy and performance comparison
+
+### Deterministic particle and kernel flows
+
+- [`acoustic_function_demo.ipynb`](deterministic_kernel_flows/acoustic_function_demo.ipynb) — acoustic multi-target model
+- [`edh_ledh_demo.ipynb`](deterministic_kernel_flows/edh_ledh_demo.ipynb) — EDH and LEDH comparison
+- [`pfpf_edh_demo.ipynb`](deterministic_kernel_flows/pfpf_edh_demo.ipynb) — PFPF-EDH with importance weights
+- [`pfpf_ledh_demo_with_comparison.ipynb`](deterministic_kernel_flows/pfpf_ledh_demo_with_comparison.ipynb) — local particle flow
+- [`pff_demo_100_dimension.ipynb`](deterministic_kernel_flows/pff_demo_100_dimension.ipynb) — high-dimensional Lorenz–96 assimilation
+- [`pff_showcase_matric_valued_kernel.ipynb`](deterministic_kernel_flows/pff_showcase_matric_valued_kernel.ipynb) — matrix-valued kernels
+
+### Differentiable particle filtering
+
+- [`pf_demo_smc.ipynb`](differentiable_particle_flows/examples/pf_demo_smc.ipynb) — standard SMC
+- [`pf_demo_soft_resampling.ipynb`](differentiable_particle_flows/examples/pf_demo_soft_resampling.ipynb) — soft resampling
+- [`pf_demo_reqularised_ot_resampling.ipynb`](differentiable_particle_flows/examples/pf_demo_reqularised_ot_resampling.ipynb) — differentiable ensemble-transform resampling
+
+## Tensor conventions
+
+The classical-filter projects generally store trajectories in columns:
+
+- states: `(state_dim, T + 1)`;
+- observations: `(obs_dim, T)`; and
+- controls: `(control_dim, T)`.
+
+The differentiable SMC package is batch-first:
+
+- particles: `[batch, particles, state_dim]`; and
+- observations: `[time, batch, obs_dim]`.
+
+Refer to each subproject README before composing modules because dtype and shape conventions differ between the classical and differentiable implementations.
 
 ## License
 
-MIT License - See LICENSE file for details
+This project is released under the [MIT License](LICENSE).
